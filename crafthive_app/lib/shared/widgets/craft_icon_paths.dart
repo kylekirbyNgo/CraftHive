@@ -1,0 +1,54 @@
+// Stroke icons from the Milestone 1 mock-ups, drawn with flutter_svg so the app
+// matches the approved design exactly (24 × 24 viewBox, round caps and joins).
+abstract final class CraftIcons {
+  static const back = '<path d="M15 18l-6-6 6-6"/>';
+  static const search = '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>';
+  static const home = '<path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>';
+  static const chat = '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/>';
+  static const plus = '<path d="M12 5v14M5 12h14"/>';
+  static const orders = '<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>';
+  static const heart = '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/>';
+  static const user = '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>';
+  static const filter = '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>';
+  static const star = '<path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/>';
+  static const send = '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>';
+  static const camera = '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>';
+  static const chevron = '<path d="M9 6l6 6-6 6"/>';
+  static const chevronDown = '<path d="M6 9l6 6 6-6"/>';
+  static const logout = '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>';
+  static const edit = '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>';
+  static const check = '<path d="M5 12l5 5L20 7"/>';
+  static const clock = '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>';
+  static const mail = '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>';
+  static const phone = '<path d="M7 3h10a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M11 18h2"/>';
+  static const lock = '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>';
+  static const eye = '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>';
+  static const globe = '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>';
+  static const flower = '<path d="M7 4l2.5 3L12 4l2.5 3L17 4v5a5 5 0 0 1-10 0z"/><path d="M12 14v7M12 18c-2-2-4-2-5-1M12 18c2-2 4-2 5-1"/>';
+  static const cube = '<path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/>';
+  static const tree = '<path d="M12 3l6 8h-3l4 6H5l4-6H6z"/><path d="M12 17v4"/>';
+  static const shirt = '<path d="M8 3L3 6l2 4 3-1v12h8V9l3 1 2-4-5-3a4 4 0 0 1-8 0z"/>';
+  static const yarn = '<circle cx="12" cy="12" r="8"/><path d="M6 8c4 0 8 3 10 9M5 13c4-1 8 1 9 6M9 4.5c3 2 6 6 6.5 11"/>';
+  static const candle = '<path d="M9 10h6v11H9z"/><path d="M12 10V7"/><path d="M12 7c-1.5-1.5-1-3.5 0-4.5 1 1 1.5 3 0 4.5z"/>';
+  static const gem = '<path d="M6 3h12l4 6-10 12L2 9z"/><path d="M2 9h20M9 3l3 6 3-6M12 21L9 9M12 21l3-12"/>';
+  static const vase = '<path d="M9 3h6M10 3v3c-3 1.5-5 4-5 7.5A6.5 6.5 0 0 0 11.5 20h1a6.5 6.5 0 0 0 6.5-6.5c0-3.5-2-6-5-7.5V3"/>';
+  static const share = '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4M12 2v13"/>';
+  static const store = '<path d="M3 9l1.5-5h15L21 9v11H3z"/><path d="M3 9c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3c0 1.7 1.3 3 3 3s3-1.3 3-3M9 20v-5h6v5"/>';
+  static const verified = '<path d="M12 2l2.4 2 3.1-.3.9 3 2.6 1.8-1.2 2.9 1.2 2.9-2.6 1.8-.9 3-3.1-.3L12 22l-2.4-2-3.1.3-.9-3L3 15.5l1.2-2.9L3 9.7l2.6-1.8.9-3 3.1.3z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>';
+  static const clip = '<path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>';
+  static const calendar = '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>';
+  static const info = '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>';
+  static const minus = '<path d="M5 12h14"/>';
+  static const image = '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>';
+  static const tag = '<path d="M3 3h8l10 10-8 8L3 11z"/><circle cx="7.5" cy="7.5" r="1.5"/>';
+  static const bell = '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>';
+  static const eyeOff = '<path d="M3 3l18 18"/><path d="M10.6 5.1A10.6 10.6 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.5 7 10 7a9.8 9.8 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>';
+  static const close = '<path d="M18 6L6 18M6 6l12 12"/>';
+  static const grid = '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>';
+  static const truck = '<path d="M3 6h11v10H3z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>';
+  static const wallet = '<path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v11a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2z"/><path d="M16 14.5h.01"/>';
+  static const pin = '<path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>';
+  static const sort = '<path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/>';
+  static const more = '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>';
+  static const sparkle = '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>';
+}

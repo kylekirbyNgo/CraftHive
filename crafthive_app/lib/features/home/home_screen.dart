@@ -12,6 +12,7 @@ import '../../shared/widgets/product_widgets.dart';
 
 /// Screen 3 – Home: profile picture top right, search, Featured (horizontal),
 /// Categories, Recent searches (horizontal), More to explore, and the bottom bar.
+/// Listings, categories and stores come from PostgreSQL (Supabase); pull down to reload.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -22,9 +23,22 @@ class HomeScreen extends ConsumerWidget {
     return 'Good evening';
   }
 
+  Future<void> _refresh(BuildContext context, WidgetRef ref) async {
+    try {
+      await ref.refresh(catalogDataProvider.future);
+    } catch (e) {
+      if (context.mounted) {
+        showMessage(context, e is AppFailure ? "Couldn't refresh. ${e.message}" : "Couldn't refresh. Please try again.");
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authProvider);
+    final catalog = ref.watch(catalogDataProvider);
+    final loading = catalog.isLoading && !catalog.hasValue;
+    final failed = catalog.hasError && !catalog.hasValue;
     final products = ref.watch(catalogProvider).where((p) => p.status == ListingStatus.active && p.sellerId != 'me').toList();
     final featured = products.where((p) => p.isFeatured).toList();
     final explore = products.where((p) => !p.isFeatured).toList();
@@ -37,8 +51,9 @@ class HomeScreen extends ConsumerWidget {
         bottom: false,
         child: RefreshIndicator(
           color: AppColors.moss,
-          onRefresh: () => Future<void>.delayed(const Duration(milliseconds: 700)),
+          onRefresh: () => _refresh(context, ref),
           child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverToBoxAdapter(
                 child: ResponsiveCenter(
@@ -73,7 +88,7 @@ class HomeScreen extends ConsumerWidget {
                             radius: 26,
                             child: Padding(
                               padding: const EdgeInsets.all(2),
-                              child: Avatar(initials: user?.initials ?? 'AR', size: 42, ring: true),
+                              child: Avatar(initials: user?.initials ?? '?', size: 42, ring: true),
                             ),
                           ),
                         ),
@@ -84,51 +99,71 @@ class HomeScreen extends ConsumerWidget {
                       padding: const EdgeInsets.fromLTRB(Insets.screen, 8, Insets.screen, 14),
                       child: _SearchField(onTap: () => context.push('/search')),
                     ),
-                    // Featured
-                    SectionHeader('Featured', action: 'See all', onAction: () => context.push('/search')),
-                    SizedBox(
-                      height: 238,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.fromLTRB(Insets.screen, 4, Insets.screen, 4),
-                        itemCount: featured.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 12),
-                        itemBuilder: (_, i) => FeaturedProductCard(product: featured[i]),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    // Categories
-                    SectionHeader('Categories', action: 'All', onAction: () => _showAllCategories(context, categories)),
-                    SizedBox(
-                      height: 100,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        children: [
-                          for (final c in categories.take(6)) _CategoryTile(category: c, onTap: () => context.push('/search?category=${c.id}')),
-                          _MoreTile(onTap: () => _showAllCategories(context, categories)),
-                        ],
-                      ),
-                    ),
-                    // Recent searches
-                    if (recent.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      SectionHeader('Recent searches', action: 'Clear', onAction: () => ref.read(recentSearchProvider.notifier).clear()),
-                      SizedBox(
-                        height: 40,
+                    if (loading)
+                      const _HomeLoading()
+                    else if (failed)
+                      _HomeError(
+                        message: catalog.error is AppFailure ? (catalog.error! as AppFailure).message : "Please check your connection and try again.",
+                        onRetry: () => ref.invalidate(catalogDataProvider),
+                      )
+                    else ...[
+                      // Featured
+                      if (featured.isNotEmpty) SectionHeader('Featured', action: 'See all', onAction: () => context.push('/search')),
+                      if (featured.isNotEmpty) SizedBox(
+                        height: 238,
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: Insets.screen),
-                          itemCount: recent.length,
-                          separatorBuilder: (_, __) => const SizedBox(width: 8),
-                          itemBuilder: (_, i) => _RecentChip(text: recent[i], onTap: () => context.push('/search?q=${Uri.encodeQueryComponent(recent[i])}')),
+                          padding: const EdgeInsets.fromLTRB(Insets.screen, 4, Insets.screen, 4),
+                          itemCount: featured.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 12),
+                          itemBuilder: (_, i) => FeaturedProductCard(product: featured[i]),
                         ),
                       ),
+                      const SizedBox(height: 10),
+                      // Categories
+                      SectionHeader('Categories', action: 'All', onAction: () => _showAllCategories(context, categories)),
+                      SizedBox(
+                        height: 100,
+                        child: ListView(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          children: [
+                            for (final c in categories.take(6)) _CategoryTile(category: c, onTap: () => context.push('/search?category=${c.id}')),
+                            _MoreTile(onTap: () => _showAllCategories(context, categories)),
+                          ],
+                        ),
+                      ),
+                      // Recent searches
+                      if (recent.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        SectionHeader('Recent searches', action: 'Clear', onAction: () => ref.read(recentSearchProvider.notifier).clear()),
+                        SizedBox(
+                          height: 40,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: Insets.screen),
+                            itemCount: recent.length,
+                            separatorBuilder: (_, __) => const SizedBox(width: 8),
+                            itemBuilder: (_, i) => _RecentChip(text: recent[i], onTap: () => context.push('/search?q=${Uri.encodeQueryComponent(recent[i])}')),
+                          ),
+                        ),
+                      ],
+                      if (explore.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        const SectionHeader('More to explore'),
+                        const SizedBox(height: 8),
+                        ProductGrid(products: explore),
+                      ],
+                      if (products.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: Insets.screen, vertical: 12),
+                          child: EmptyState(
+                            icon: CraftIcons.tag,
+                            title: 'No crafts yet',
+                            message: 'New listings from makers will show up here. Pull down to check again.',
+                          ),
+                        ),
                     ],
-                    const SizedBox(height: 14),
-                    const SectionHeader('More to explore'),
-                    const SizedBox(height: 8),
-                    ProductGrid(products: explore),
                     const SizedBox(height: 110), // room above the bottom bar
                   ]),
                 ),
@@ -282,6 +317,60 @@ class _RecentChip extends StatelessWidget {
               ]),
             ),
           ),
+        ),
+      );
+}
+
+/// Placeholder blocks shown while the first load is in progress.
+class _HomeLoading extends StatelessWidget {
+  const _HomeLoading();
+
+  Widget _block(double w, double h, {double r = 14}) => Container(
+        width: w,
+        height: h,
+        decoration: BoxDecoration(color: AppColors.lightSand, borderRadius: BorderRadius.circular(r)),
+      );
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        label: 'Loading crafts',
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: Insets.screen),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const SizedBox(height: 6),
+            _block(110, 18, r: 6),
+            const SizedBox(height: 12),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
+              child: Row(children: [for (var i = 0; i < 3; i++) Padding(padding: const EdgeInsets.only(right: 12), child: _block(150, 210))]),
+            ),
+            const SizedBox(height: 22),
+            _block(110, 18, r: 6),
+            const SizedBox(height: 12),
+            Row(children: [for (var i = 0; i < 4; i++) Padding(padding: const EdgeInsets.only(right: 16), child: _block(58, 58, r: 18))]),
+            const SizedBox(height: 26),
+            const Center(child: SizedBox(width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 3, color: AppColors.moss))),
+          ]),
+        ),
+      );
+}
+
+/// Shown when the listings could not be loaded and there is nothing saved to show.
+class _HomeError extends StatelessWidget {
+  const _HomeError({required this.message, required this.onRetry});
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: Insets.screen, vertical: 12),
+        child: EmptyState(
+          icon: CraftIcons.info,
+          title: "We couldn't load the crafts",
+          message: message,
+          actionLabel: 'Try again',
+          onAction: onRetry,
         ),
       );
 }

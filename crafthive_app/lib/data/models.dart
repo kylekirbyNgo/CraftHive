@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 
-/// Plain data classes used by the UI. In Milestone 3 these are filled from
-/// PostgreSQL (Supabase) and Firebase instead of the mock repository.
+/// Plain data classes used by the UI. Catalog and account data are filled from
+/// PostgreSQL (Supabase); chats, orders and notifications still use sample data.
 
 class AppUser {
   const AppUser({
+    this.id = '',
     required this.username,
     required this.email,
     required this.phone,
@@ -16,6 +17,8 @@ class AppUser {
     this.isVerified = false,
   });
 
+  /// Supabase Auth user ID (users.user_id). Empty for the offline sample user.
+  final String id;
   final String username;
   final String email;
   final String phone;
@@ -28,14 +31,15 @@ class AppUser {
 
   String get initials {
     final parts = displayName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return username.substring(0, 2).toUpperCase();
+    if (parts.isEmpty) return username.isEmpty ? '?' : username.substring(0, username.length >= 2 ? 2 : 1).toUpperCase();
     if (parts.length == 1) return parts.first.substring(0, parts.first.length >= 2 ? 2 : 1).toUpperCase();
     return (parts.first[0] + parts.last[0]).toUpperCase();
   }
 
   String get firstName => displayName.split(' ').first;
 
-  AppUser copyWith({String? displayName, String? bio, String? location, String? phone, String? email}) => AppUser(
+  AppUser copyWith({String? displayName, String? bio, String? location, String? phone, String? email, bool? isVerified}) => AppUser(
+        id: id,
         username: username,
         email: email ?? this.email,
         phone: phone ?? this.phone,
@@ -44,7 +48,7 @@ class AppUser {
         displayName: displayName ?? this.displayName,
         bio: bio ?? this.bio,
         location: location ?? this.location,
-        isVerified: isVerified,
+        isVerified: isVerified ?? this.isVerified,
       );
 }
 
@@ -105,6 +109,8 @@ class Product {
     this.photoCount = 3,
     this.isFeatured = false,
     this.status = ListingStatus.active,
+    this.imageUrls = const [],
+    this.reviewCount = 0,
   });
 
   final String id;
@@ -124,11 +130,16 @@ class Product {
   final bool isFeatured;
   final ListingStatus status;
 
+  /// Public photo links from Supabase Storage, cover first. Empty means the
+  /// category placeholder is shown.
+  final List<String> imageUrls;
+  final int reviewCount;
+
   bool get isSoldOut => stock == 0 && leadDays == 0;
   bool get isLowStock => stock > 0 && stock <= 3;
   bool get isMadeToOrder => stock == 0 && leadDays > 0;
 
-  Product copyWith({ListingStatus? status, int? stock, double? price}) => Product(
+  Product copyWith({ListingStatus? status, int? stock, double? price, bool? isFeatured}) => Product(
         id: id,
         title: title,
         sellerId: sellerId,
@@ -143,8 +154,10 @@ class Product {
         customOptions: customOptions,
         customNote: customNote,
         photoCount: photoCount,
-        isFeatured: isFeatured,
+        isFeatured: isFeatured ?? this.isFeatured,
         status: status ?? this.status,
+        imageUrls: imageUrls,
+        reviewCount: reviewCount,
       );
 }
 

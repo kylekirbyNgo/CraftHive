@@ -1,50 +1,123 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show Supabase;
 
+import '../core/theme/app_colors.dart';
 import '../core/utils/format.dart';
+import '../shared/widgets/craft_icon.dart';
 import 'mock_data.dart';
 import 'models.dart';
+import 'repositories/auth_repository.dart';
+import 'repositories/catalog_repository.dart';
+import 'sample_ids.dart';
+
+export 'repositories/auth_repository.dart' show AppFailure, AuthField, SignUpData, SignUpOutcome;
+export 'repositories/catalog_repository.dart' show CatalogData;
 
 // ---------------------------------------------------------------------------
-// Session (Firebase Authentication in Milestone 3)
+// Session (Supabase Auth). The session is kept on the phone, so the user stays
+// logged in after closing the app.
 // ---------------------------------------------------------------------------
+final authRepositoryProvider = Provider<AuthRepository>((ref) => SupabaseAuthRepository(Supabase.instance.client));
+
+/// The signed-in user's ID, or null when signed out.
+final sessionProvider = StreamProvider<String?>((ref) => ref.watch(authRepositoryProvider).userIdChanges);
+
+/// The signed-in user's profile row from the users table.
+final profileProvider = FutureProvider<AppUser?>((ref) async {
+  final userId = await ref.watch(sessionProvider.future);
+  if (userId == null) return null;
+  return ref.watch(authRepositoryProvider).loadProfile(userId);
+});
+
+enum AuthStatus { checking, signedOut, signedIn, profileError }
+
+final authStatusProvider = Provider<AuthStatus>((ref) {
+  final session = ref.watch(sessionProvider);
+  if (!session.hasValue && !session.hasError) return AuthStatus.checking;
+  if (session.valueOrNull == null) return AuthStatus.signedOut;
+  final profile = ref.watch(profileProvider);
+  if (profile.valueOrNull != null) return AuthStatus.signedIn;
+  if (profile.hasError && !profile.isLoading) return AuthStatus.profileError;
+  return AuthStatus.checking;
+});
+
+/// True after the user opened the password-reset link from their email: the
+/// router shows "Choose a new password" until it is saved or cancelled.
+final passwordRecoveryProvider = StateProvider<bool>((ref) => false);
+
 class AuthController extends Notifier<AppUser?> {
   @override
-  AppUser? build() => null;
+  AppUser? build() => ref.watch(profileProvider).valueOrNull;
 
-  /// Mock login: any username/email with a password of 8+ characters works.
-  Future<void> logIn(String id, String password) async {
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    if (password.length < 8) throw Exception('Wrong username or password.');
-    state = MockData.demoUser;
-  }
+  AuthRepository get _repo => ref.read(authRepositoryProvider);
 
-  Future<void> signUp({
-    required String email,
-    required String phone,
-    required String country,
-    required String sex,
-    required String username,
-  }) async {
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    state = AppUser(username: username, email: email, phone: phone, country: country, sex: sex, displayName: username, location: country);
-  }
+  /// Username or email + password. Throws [AppFailure] with a message to show.
+  Future<void> logIn(String usernameOrEmail, String password) => _repo.logIn(usernameOrEmail, password);
 
+  Future<SignUpOutcome> signUp(SignUpData data) => _repo.signUp(data);
+
+  Future<void> sendPasswordResetLink(String email) => _repo.sendPasswordResetLink(email);
+
+  Future<void> updatePassword(String newPassword) => _repo.updatePassword(newPassword);
+
+  /// Used by Edit profile (store module) to show changes right away.
   void updateProfile(AppUser user) => state = user;
 
-  void signOut() => state = null;
+  Future<void> signOut() async {
+    try {
+      await _repo.signOut();
+    } on AppFailure {
+      // Offline: Supabase still clears the session on the phone, so the user is signed out.
+    }
+  }
 }
 
 final authProvider = NotifierProvider<AuthController, AppUser?>(AuthController.new);
 
 // ---------------------------------------------------------------------------
-// Catalog (PostgreSQL: PRODUCT, CATEGORY, SELLER)
+// Catalog (PostgreSQL: CATEGORY, STORE, PRODUCT, PRODUCT_IMAGE, REVIEW)
 // ---------------------------------------------------------------------------
-final categoriesProvider = Provider<List<Category>>((ref) => MockData.categories);
-final sellersProvider = Provider<List<Seller>>((ref) => MockData.sellers);
+final catalogRepositoryProvider = Provider<CatalogRepository>((ref) => SupabaseCatalogRepository(Supabase.instance.client));
+
+/// Categories, stores and listings for the signed-in user. Reloads when the
+/// account changes; Home's pull-to-refresh calls ref.refresh on it.
+final catalogDataProvider = FutureProvider<CatalogData>((ref) async {
+  final userId = ref.watch(authProvider.select((u) => u?.id));
+  if (userId == null) return CatalogData.empty;
+  return ref.watch(catalogRepositoryProvider).load(myUserId: userId);
+});
+
+final categoriesProvider = Provider<List<Category>>((ref) => ref.watch(catalogDataProvider).valueOrNull?.categories ?? const []);
+
+/// All stores. The signed-in user's own store always has the id "me"; if they
+/// have not opened one yet, a placeholder built from their profile is used.
+final sellersProvider = Provider<List<Seller>>((ref) {
+  final sellers = [...?ref.watch(catalogDataProvider).valueOrNull?.sellers];
+  final user = ref.watch(authProvider);
+  if (user != null && !sellers.any((s) => s.id == 'me')) {
+    sellers.insert(
+      0,
+      Seller(
+        id: 'me',
+        name: user.username,
+        initials: user.initials,
+        color: AppColors.clay,
+        location: user.location,
+        isVerified: false,
+        rating: 0,
+        sold: 0,
+        replyTime: 'a few hours',
+        bio: user.bio,
+      ),
+    );
+  }
+  return sellers;
+});
 
 class CatalogController extends Notifier<List<Product>> {
   @override
-  List<Product> build() => [...MockData.products];
+  List<Product> build() => [...?ref.watch(catalogDataProvider).valueOrNull?.products];
 
   void add(Product p) => state = [p, ...state];
 
@@ -67,8 +140,10 @@ final sellerProvider = Provider.family<Seller?, String>((ref, id) {
   return null;
 });
 
-final categoryProvider = Provider.family<Category, String>((ref, id) =>
-    ref.watch(categoriesProvider).firstWhere((c) => c.id == id, orElse: () => ref.watch(categoriesProvider).first));
+const _unknownCategory = Category(id: '', name: 'Other', icon: CraftIcons.tag, tint: AppColors.lightSand, ink: AppColors.grayBrown);
+
+final categoryProvider = Provider.family<Category, String>(
+    (ref, id) => ref.watch(categoriesProvider).where((c) => c.id == id).firstOrNull ?? _unknownCategory);
 
 /// Listings in my own store (seller id "me").
 final myListingsProvider = Provider<List<Product>>(
@@ -128,11 +203,12 @@ List<Product> searchProducts(List<Product> all, List<Seller> sellers, SearchFilt
 }
 
 // ---------------------------------------------------------------------------
-// Per-user lists (Firestore users/{uid}/savedItems and recentSearches)
+// Per-user lists. Recent searches are kept on the phone per account
+// (Firestore users/{uid}/recentSearches in the paper); saved items are still sample data.
 // ---------------------------------------------------------------------------
 class SavedController extends Notifier<Set<String>> {
   @override
-  Set<String> build() => {'p2', 'p5', 'p9'};
+  Set<String> build() => {SampleIds.p2, SampleIds.p5, SampleIds.p9};
 
   bool toggle(String id) {
     final saved = !state.contains(id);
@@ -144,16 +220,49 @@ class SavedController extends Notifier<Set<String>> {
 final savedProvider = NotifierProvider<SavedController, Set<String>>(SavedController.new);
 
 class RecentSearchController extends Notifier<List<String>> {
+  static const _max = 10;
+  String _key = '';
+
   @override
-  List<String> build() => [...MockData.recentSearches];
+  List<String> build() {
+    final userId = ref.watch(authProvider.select((u) => u?.id));
+    if (userId == null) return const [];
+    _key = 'recent_searches_$userId';
+    _load(_key);
+    return const [];
+  }
+
+  Future<void> _load(String key) async {
+    try {
+      final saved = (await SharedPreferences.getInstance()).getStringList(key) ?? const [];
+      if (key == _key && state.isEmpty) state = saved;
+    } catch (_) {
+      // Storage unavailable: keep the list for this session only.
+    }
+  }
+
+  Future<void> _save() async {
+    try {
+      await (await SharedPreferences.getInstance()).setStringList(_key, state);
+    } catch (_) {}
+  }
 
   void add(String q) {
     final t = q.trim();
-    if (t.isEmpty) return;
-    state = [t, ...state.where((x) => x.toLowerCase() != t.toLowerCase())].take(10).toList();
+    if (t.isEmpty || _key.isEmpty) return;
+    state = [t, ...state.where((x) => x.toLowerCase() != t.toLowerCase())].take(_max).toList();
+    _save();
   }
 
-  void clear() => state = [];
+  void remove(String q) {
+    state = [for (final x in state) if (x != q) x];
+    _save();
+  }
+
+  void clear() {
+    state = const [];
+    _save();
+  }
 }
 
 final recentSearchProvider = NotifierProvider<RecentSearchController, List<String>>(RecentSearchController.new);
@@ -253,7 +362,7 @@ final unreadCountProvider = Provider<int>((ref) => ref.watch(chatsProvider).fold
 class RequestController extends Notifier<List<CustomRequest>> {
   @override
   List<CustomRequest> build() => [
-        CustomRequest(code: 'CR-1042', productId: 'p1', description: 'Engrave "Lola Nena" on the handle in cursive. Make a set of 3 in small, medium and large.',
+        CustomRequest(code: 'CR-1042', productId: SampleIds.p1, description: 'Engrave "Lola Nena" on the handle in cursive. Make a set of 3 in small, medium and large.',
             options: const ['Engraving', 'Size'], quantity: 3, budget: 1200, neededBy: DateTime(2026, 12, 18), sentAt: DateTime(2026, 10, 31, 14, 5), status: RequestStatus.accepted),
       ];
 

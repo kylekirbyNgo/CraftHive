@@ -5,11 +5,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/validators.dart';
+import '../../data/models.dart';
 import '../../data/providers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 
-/// Screen 2 – Sign up: email, phone (+63), country, sex, username and password.
+/// Screen 2 – Sign up: full name, email, phone (+63), country, sex, username and password.
+/// Creates a Supabase Auth account; a database trigger copies the details into USER and BUYER.
 class SignupScreen extends ConsumerStatefulWidget {
   const SignupScreen({super.key});
   @override
@@ -18,6 +21,7 @@ class SignupScreen extends ConsumerStatefulWidget {
 
 class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _form = GlobalKey<FormState>();
+  final _name = TextEditingController();
   final _email = TextEditingController();
   final _phone = TextEditingController();
   final _user = TextEditingController();
@@ -28,33 +32,85 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   bool _hide = true;
   bool _busy = false;
   bool _showAgreeError = false;
+  bool _confirmSent = false;
+  String? _usernameError;
+  String? _emailError;
+  String? _error;
 
   static const _countries = ['Philippines', 'Singapore', 'Malaysia', 'Indonesia', 'Thailand', 'Vietnam', 'Other'];
   static const _codes = {'Philippines': '+63', 'Singapore': '+65', 'Malaysia': '+60', 'Indonesia': '+62', 'Thailand': '+66', 'Vietnam': '+84', 'Other': '+'};
 
   @override
   void dispose() {
-    for (final c in [_email, _phone, _user, _pw]) {
+    for (final c in [_name, _email, _phone, _user, _pw]) {
       c.dispose();
     }
     super.dispose();
   }
 
   Future<void> _submit() async {
+    if (_busy) return;
     FocusScope.of(context).unfocus();
+    setState(() {
+      _usernameError = null;
+      _emailError = null;
+      _error = null;
+    });
     final ok = _form.currentState!.validate();
     setState(() => _showAgreeError = !_agree);
+    if (!ok) setState(() => _error = 'Please fix the highlighted fields above.');
     if (!ok || !_agree) return;
     setState(() => _busy = true);
-    await ref.read(authProvider.notifier).signUp(
-          email: _email.text.trim(),
-          phone: '${_codes[_country]} ${_phone.text.trim()}',
-          country: _country,
-          sex: _sex,
-          username: _user.text.trim(),
-        );
-    if (mounted) setState(() => _busy = false);
+    try {
+      final outcome = await ref.read(authProvider.notifier).signUp(SignUpData(
+            fullName: _name.text,
+            email: _email.text,
+            phone: Validators.storedPhone(_codes[_country]!, _phone.text),
+            country: _country,
+            sex: _sex,
+            username: _user.text,
+            password: _pw.text,
+          ));
+      // signedIn: the router opens Home once the new profile has loaded.
+      if (outcome == SignUpOutcome.confirmEmail && mounted) {
+        setState(() {
+          _confirmSent = true;
+          _busy = false;
+        });
+      }
+    } on AppFailure catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        switch (e.field) {
+          case AuthField.username:
+            _usernameError = e.message;
+          case AuthField.email:
+            _emailError = e.message;
+          default:
+            _error = e.message;
+        }
+      });
+    }
   }
+
+  Widget _confirmView() => Column(key: const ValueKey('confirm'), children: [
+        const SizedBox(height: 24),
+        Container(
+          width: 76,
+          height: 76,
+          decoration: const BoxDecoration(color: AppColors.fernTint, shape: BoxShape.circle),
+          alignment: Alignment.center,
+          child: const CraftIcon(CraftIcons.mail, size: 36, color: AppColors.fern),
+        ),
+        const SizedBox(height: 16),
+        Text('Confirm your email', style: AppText.headline.copyWith(fontSize: 21)),
+        const SizedBox(height: 8),
+        Text('We sent a link to ${_email.text.trim()}. Open it to activate your account, then log in.',
+            style: AppText.body.copyWith(color: AppColors.grayBrown), textAlign: TextAlign.center),
+        const SizedBox(height: 24),
+        AppButton(label: 'Go to log in', onPressed: () => context.go('/login')),
+      ]);
 
   @override
   Widget build(BuildContext context) {
@@ -66,12 +122,22 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           padding: const EdgeInsets.fromLTRB(Insets.screen, 8, Insets.screen, 24),
           child: ResponsiveCenter(
             maxWidth: 480,
-            child: Form(
+            child: _confirmSent ? _confirmView() : Form(
               key: _form,
               autovalidateMode: AutovalidateMode.onUserInteraction,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  LabeledField(
+                    label: 'Full name',
+                    controller: _name,
+                    hint: 'Ana Reyes',
+                    icon: CraftIcons.user,
+                    keyboardType: TextInputType.name,
+                    autofillHints: const [AutofillHints.name],
+                    validator: Validators.fullName,
+                  ),
+                  const SizedBox(height: 12),
                   LabeledField(
                     label: 'Email',
                     controller: _email,
@@ -79,7 +145,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     icon: CraftIcons.mail,
                     keyboardType: TextInputType.emailAddress,
                     autofillHints: const [AutofillHints.email],
-                    validator: (v) => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v?.trim() ?? '') ? null : 'Enter a valid email address.',
+                    validator: Validators.email,
+                    errorText: _emailError,
+                    onChanged: (_) {
+                      if (_emailError != null) setState(() => _emailError = null);
+                    },
                   ),
                   const SizedBox(height: 12),
                   Text('Phone number', style: AppText.label),
@@ -98,15 +168,16 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                         controller: _phone,
                         keyboardType: TextInputType.phone,
                         autofillHints: const [AutofillHints.telephoneNumberNational],
-                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9 ]')), LengthLimitingTextInputFormatter(13)],
+                        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9 ]')), LengthLimitingTextInputFormatter(15)],
                         style: AppText.body.copyWith(fontSize: 15),
                         textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(
-                          hintText: '917 123 4567',
+                        decoration: InputDecoration(
+                          hintText: _country == 'Philippines' ? '917 123 4567' : 'Mobile number',
+                          errorMaxLines: 2,
                           prefixIcon: Padding(padding: EdgeInsets.only(left: 14, right: 10), child: CraftIcon(CraftIcons.phone, size: 18, color: AppColors.grayBrown)),
                           prefixIconConstraints: BoxConstraints(minWidth: 0, minHeight: 0),
                         ),
-                        validator: (v) => (v ?? '').replaceAll(' ', '').length == 10 ? null : 'Enter the 10-digit mobile number.',
+                        validator: (v) => Validators.phone(v, country: _country),
                       ),
                     ),
                   ]),
@@ -143,7 +214,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     icon: CraftIcons.user,
                     helper: '4 to 20 letters, numbers, dots or underscores. Shown on your store.',
                     autofillHints: const [AutofillHints.newUsername],
-                    validator: (v) => RegExp(r'^[a-z0-9._]{4,20}$').hasMatch(v?.trim() ?? '') ? null : 'Use 4–20 lowercase letters, numbers, dots or underscores.',
+                    validator: Validators.username,
+                    errorText: _usernameError,
+                    onChanged: (_) {
+                      if (_usernameError != null) setState(() => _usernameError = null);
+                    },
                   ),
                   const SizedBox(height: 12),
                   LabeledField(
@@ -152,7 +227,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     hint: 'At least 8 characters',
                     icon: CraftIcons.lock,
                     obscure: _hide,
-                    helper: 'At least 8 characters, including a number.',
+                    helper: 'At least 8 characters, with letters and a number.',
                     textInputAction: TextInputAction.done,
                     autofillHints: const [AutofillHints.newPassword],
                     suffix: IconButton(
@@ -160,7 +235,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                       onPressed: () => setState(() => _hide = !_hide),
                       icon: CraftIcon(_hide ? CraftIcons.eye : CraftIcons.eyeOff, size: 20, color: AppColors.grayBrown),
                     ),
-                    validator: (v) => (v ?? '').length >= 8 && RegExp(r'\d').hasMatch(v ?? '') ? null : 'Use at least 8 characters, including a number.',
+                    validator: Validators.newPassword,
+                    onSubmitted: (_) => _submit(),
                   ),
                   const SizedBox(height: 10),
                   InkWell(
@@ -187,10 +263,16 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                       padding: const EdgeInsets.only(left: 12, bottom: 4),
                       child: Text('Please accept the terms to continue.', style: AppText.caption.copyWith(color: AppColors.brick)),
                     ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 4),
+                    InfoNote(_error!, tone: Tone.error, icon: CraftIcons.info),
+                  ],
                   const SizedBox(height: 8),
                   AppButton(label: 'Sign up', onPressed: _submit, loading: _busy),
                   const SizedBox(height: 14),
-                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  // Wrap (not Row) so the link moves to a second line on narrow
+                  // phones or with large text instead of overflowing (bug B-01).
+                  Wrap(alignment: WrapAlignment.center, crossAxisAlignment: WrapCrossAlignment.center, children: [
                     Text('Already have an account?', style: AppText.body.copyWith(color: AppColors.grayBrown)),
                     TextButton(onPressed: () => context.canPop() ? context.pop() : context.go('/login'), child: const Text('Log in')),
                   ]),

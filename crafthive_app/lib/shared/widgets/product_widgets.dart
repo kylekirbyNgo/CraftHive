@@ -10,8 +10,8 @@ import '../../data/providers.dart';
 import 'common.dart';
 import 'craft_icon.dart';
 
-/// Placeholder product photo: the category's tint with its craft icon.
-/// Real photos from Supabase Storage replace this in Milestone 3.
+/// Product photo from Supabase Storage. Listings without photos (and photos that
+/// fail to load) show the category's tint with its craft icon instead.
 class ProductPhoto extends ConsumerWidget {
   const ProductPhoto({super.key, required this.product, this.width, this.height = 112, this.radius = 12, this.iconScale = 0.38, this.variant = 0});
   final Product product;
@@ -28,12 +28,26 @@ class ProductPhoto extends ConsumerWidget {
     return LayoutBuilder(builder: (context, c) {
       final w = width ?? (c.maxWidth.isFinite ? c.maxWidth : height);
       final iconSize = (w < height ? w : height) * iconScale;
-      return Container(
+      final placeholder = Container(
         width: width,
         height: height,
         decoration: BoxDecoration(color: tint, borderRadius: BorderRadius.circular(radius)),
         alignment: Alignment.center,
         child: CraftIcon(cat.icon, size: iconSize, color: cat.ink, strokeWidth: 1.5, semanticLabel: 'Photo of ${product.title}'),
+      );
+      if (product.imageUrls.isEmpty) return placeholder;
+      final url = product.imageUrls[variant < product.imageUrls.length ? variant : product.imageUrls.length - 1];
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: Image.network(
+          url,
+          width: width,
+          height: height,
+          fit: BoxFit.cover,
+          semanticLabel: 'Photo of ${product.title}',
+          loadingBuilder: (_, child, progress) => progress == null ? child : Container(width: width, height: height, color: tint),
+          errorBuilder: (_, __, ___) => placeholder,
+        ),
       );
     });
   }
@@ -46,7 +60,7 @@ class _Rating extends StatelessWidget {
   Widget build(BuildContext context) => Row(mainAxisSize: MainAxisSize.min, children: [
         const CraftIcon(CraftIcons.star, size: 13, color: AppColors.softHoney),
         const SizedBox(width: 3),
-        Text(value.toStringAsFixed(1), style: AppText.caption.copyWith(fontSize: 11.5)),
+        Text(value > 0 ? value.toStringAsFixed(1) : 'New', style: AppText.caption.copyWith(fontSize: 11.5)),
       ]);
 }
 

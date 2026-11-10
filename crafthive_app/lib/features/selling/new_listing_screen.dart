@@ -6,6 +6,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../../data/sample_ids.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 
@@ -339,7 +340,7 @@ class _PhotoThumb extends ConsumerWidget {
   final VoidCallback onRemove;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final cat = ref.watch(categoryProvider(categoryId ?? 'crochet'));
+    final cat = ref.watch(categoryProvider(categoryId ?? SampleIds.catCrochet));
     return Stack(children: [
       Container(
         width: 84,

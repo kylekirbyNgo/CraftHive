@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/validators.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
 import '../../shared/widgets/common.dart';
@@ -32,18 +33,29 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _submit() async {
+    if (_busy) return;
     FocusScope.of(context).unfocus();
     setState(() => _error = null);
     if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
     try {
       await ref.read(authProvider.notifier).logIn(_id.text.trim(), _pw.text);
-      // The router redirects to Home once the user is signed in.
-    } catch (e) {
-      setState(() => _error = 'Wrong username or password. Please try again.');
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      // Signed in: the router opens Home once the profile has loaded.
+    } on AppFailure catch (e) {
+      if (mounted) setState(() {
+        _error = e.message;
+        _busy = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() {
+        _error = 'Something went wrong. Please try again.';
+        _busy = false;
+      });
     }
+  }
+
+  void _clearError() {
+    if (_error != null) setState(() => _error = null);
   }
 
   @override
@@ -59,6 +71,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 maxWidth: 440,
                 child: Form(
                   key: _form,
+                  // Re-check a field as soon as it changes, so a fixed field's
+                  // error disappears right away (bug B-02).
+                  autovalidateMode: AutovalidateMode.onUserInteraction,
                   child: AutofillGroup(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -82,10 +97,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         LabeledField(
                           label: 'Username or email',
                           controller: _id,
+                          keyboardType: TextInputType.emailAddress,
                           hint: 'ana.makes',
                           icon: CraftIcons.user,
                           autofillHints: const [AutofillHints.username, AutofillHints.email],
-                          validator: (v) => (v == null || v.trim().isEmpty) ? 'Enter your username or email.' : null,
+                          validator: Validators.loginId,
+                          onChanged: (_) => _clearError(),
                         ),
                         const SizedBox(height: 16),
                         LabeledField(
@@ -96,7 +113,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           obscure: _hide,
                           textInputAction: TextInputAction.done,
                           autofillHints: const [AutofillHints.password],
-                          validator: (v) => (v == null || v.isEmpty) ? 'Enter your password.' : null,
+                          validator: Validators.loginPassword,
+                          onChanged: (_) => _clearError(),
+                          onSubmitted: (_) => _submit(),
                           suffix: IconButton(
                             tooltip: _hide ? 'Show password' : 'Hide password',
                             onPressed: () => setState(() => _hide = !_hide),

@@ -9,12 +9,16 @@ import 'mock_data.dart';
 import 'models.dart';
 import 'repositories/auth_repository.dart';
 import 'repositories/catalog_repository.dart';
+import 'repositories/custom_order_repository.dart';
 import 'repositories/listing_repository.dart';
+import 'repositories/order_repository.dart';
 import 'sample_ids.dart';
 
 export 'repositories/auth_repository.dart' show AppFailure, AuthField, SignUpData, SignUpOutcome;
 export 'repositories/catalog_repository.dart' show CatalogData;
+export 'repositories/custom_order_repository.dart' show CustomRequestInput;
 export 'repositories/listing_repository.dart' show ListingInput, ListingPhoto, StoreInput;
+export 'repositories/order_repository.dart' show PickedImage;
 
 // ---------------------------------------------------------------------------
 // Session (Supabase Auth). The session is kept on the phone, so the user stays
@@ -369,63 +373,146 @@ final chatsProvider = NotifierProvider<ChatController, List<ChatThread>>(ChatCon
 final unreadCountProvider = Provider<int>((ref) => ref.watch(chatsProvider).fold(0, (sum, t) => sum + t.unread));
 
 // ---------------------------------------------------------------------------
-// Custom requests (PostgreSQL: CUSTOM_REQUEST, QUOTE)
+// Custom requests (PostgreSQL: CUSTOM_REQUEST, CUSTOM_REQUEST_OPTION,
+// CUSTOM_REQUEST_IMAGE, QUOTE)
 // ---------------------------------------------------------------------------
-class RequestController extends Notifier<List<CustomRequest>> {
-  @override
-  List<CustomRequest> build() => [
-        CustomRequest(code: 'CR-1042', productId: SampleIds.p1, description: 'Engrave "Lola Nena" on the handle in cursive. Make a set of 3 in small, medium and large.',
-            options: const ['Engraving', 'Size'], quantity: 3, budget: 1200, neededBy: DateTime(2026, 12, 18), sentAt: DateTime(2026, 10, 31, 14, 5), status: RequestStatus.accepted),
-      ];
+final customOrderRepositoryProvider = Provider<CustomOrderRepository>((ref) => SupabaseCustomOrderRepository(Supabase.instance.client));
 
-  CustomRequest submit({required String productId, required String description, required List<String> options, required int quantity, required DateTime neededBy, double? budget}) {
-    final r = CustomRequest(
-      code: 'CR-${1052 + state.length}',
-      productId: productId,
-      description: description,
-      options: options,
-      quantity: quantity,
-      budget: budget,
-      neededBy: neededBy,
-      sentAt: DateTime.now(),
-    );
-    state = [r, ...state];
-    return r;
-  }
-}
+/// Requests I sent (buying) and requests for my store (selling). Reloads when
+/// the account changes; the screens call [CustomOrderActions] to change them.
+final requestsDataProvider = FutureProvider<List<CustomRequest>>((ref) async {
+  final userId = ref.watch(authProvider.select((u) => u?.id));
+  if (userId == null) return const [];
+  return ref.watch(customOrderRepositoryProvider).loadRequests();
+});
 
-final requestsProvider = NotifierProvider<RequestController, List<CustomRequest>>(RequestController.new);
+final requestsProvider = Provider<List<CustomRequest>>((ref) => ref.watch(requestsDataProvider).valueOrNull ?? const []);
 
 final requestProvider = Provider.family<CustomRequest?, String>((ref, code) => ref.watch(requestsProvider).where((r) => r.code == code).firstOrNull);
 
-// ---------------------------------------------------------------------------
-// Orders (PostgreSQL: ORDERS, STATUS_HISTORY, PAYMENT)
-// ---------------------------------------------------------------------------
-class OrderController extends Notifier<List<Order>> {
-  @override
-  List<Order> build() => [...MockData.orders];
+/// Requests waiting for me: new ones for my store, or quotes I have not answered.
+final requestsNeedingActionProvider = Provider<int>((ref) => ref.watch(requestsProvider).where((r) => r.needsMyAction).length);
 
-  void advance(String number, OrderStatus to, {String? note}) {
-    state = [
-      for (final o in state)
-        if (o.number == number) o.copyWith(status: to, history: [...o.history, OrderEvent(to, Fmt.stamp(DateTime.now()), note)]) else o,
-    ];
+/// Every change is saved in PostgreSQL first, then the lists are reloaded so
+/// all screens show the database's state. Errors are thrown as [AppFailure].
+class CustomOrderActions {
+  CustomOrderActions(this._ref);
+  final Ref _ref;
+
+  CustomOrderRepository get _repo => _ref.read(customOrderRepositoryProvider);
+
+  Future<void> _reload({bool orders = false}) async {
+    _ref.invalidate(requestsDataProvider);
+    if (orders) _ref.invalidate(ordersDataProvider);
+    await _ref.read(requestsDataProvider.future);
+    if (orders) await _ref.read(ordersDataProvider.future);
   }
 
-  void uploadProof(String number, String ref) {
-    state = [
-      for (final o in state)
-        if (o.number == number)
-          o.copyWith(paymentRef: ref, history: [...o.history, OrderEvent(o.status, Fmt.stamp(DateTime.now()), 'Payment proof uploaded (GCash ref $ref).')])
-        else
-          o,
-    ];
+  /// Returns the request number (CR-…).
+  Future<String> submit(CustomRequestInput input) async {
+    final code = await _repo.submitRequest(input);
+    await _reload();
+    return code;
+  }
+
+  Future<void> cancel(CustomRequest r) async {
+    await _repo.cancelRequest(r);
+    await _reload();
+  }
+
+  Future<void> sendQuote(CustomRequest r, {required double price, required DateTime readyBy, String? message}) async {
+    await _repo.sendQuote(request: r, price: price, readyBy: readyBy, message: message);
+    await _reload();
+  }
+
+  Future<void> decline(CustomRequest r, String reason) async {
+    await _repo.declineRequest(request: r, reason: reason);
+    await _reload();
+  }
+
+  /// Returns the new order number.
+  Future<String> accept(QuoteOffer q) async {
+    final number = await _repo.acceptQuote(q);
+    await _reload(orders: true);
+    return number;
+  }
+
+  Future<void> askForChanges(QuoteOffer q, String note) async {
+    await _repo.requestChanges(q, note);
+    await _reload();
   }
 }
 
-final ordersProvider = NotifierProvider<OrderController, List<Order>>(OrderController.new);
+final customOrderActionsProvider = Provider<CustomOrderActions>((ref) => CustomOrderActions(ref));
+
+// ---------------------------------------------------------------------------
+// Orders (PostgreSQL: ORDERS, ORDER_ITEM, PAYMENT, ORDER_STATUS_HISTORY, REVIEW)
+// ---------------------------------------------------------------------------
+final orderRepositoryProvider = Provider<OrderRepository>((ref) => SupabaseOrderRepository(Supabase.instance.client));
+
+final ordersDataProvider = FutureProvider<List<Order>>((ref) async {
+  final userId = ref.watch(authProvider.select((u) => u?.id));
+  if (userId == null) return const [];
+  return ref.watch(orderRepositoryProvider).loadOrders();
+});
+
+final ordersProvider = Provider<List<Order>>((ref) => ref.watch(ordersDataProvider).valueOrNull ?? const []);
 
 final orderProvider = Provider.family<Order?, String>((ref, number) => ref.watch(ordersProvider).where((o) => o.number == number).firstOrNull);
+
+/// Signed link for a private photo (payment proof or reference photo); valid for an hour.
+final privateImageUrlProvider = FutureProvider.family<String, String>((ref, path) => ref.watch(orderRepositoryProvider).privateImageUrl(path));
+
+class OrderActions {
+  OrderActions(this._ref);
+  final Ref _ref;
+
+  OrderRepository get _repo => _ref.read(orderRepositoryProvider);
+
+  Future<void> _reload({bool catalog = false}) async {
+    _ref.invalidate(ordersDataProvider);
+    // Stock changes when an order is placed or cancelled, so listings reload too.
+    if (catalog) _ref.invalidate(catalogDataProvider);
+    await _ref.read(ordersDataProvider.future);
+  }
+
+  /// Buy now. Returns the order number.
+  Future<String> place(Product p, int quantity) async {
+    final number = await _repo.placeOrder(productId: p.id, quantity: quantity);
+    await _reload(catalog: true);
+    return number;
+  }
+
+  Future<void> submitPayment(Order o, {required String reference, required PickedImage proof}) async {
+    await _repo.submitPayment(order: o, reference: reference, proof: proof);
+    await _reload();
+  }
+
+  Future<void> reviewPayment(Order o, {required bool accept, String? reason}) async {
+    await _repo.reviewPayment(order: o, accept: accept, reason: reason);
+    await _reload();
+  }
+
+  Future<void> advance(Order o, OrderStatus to, {String? note}) async {
+    final status = switch (to) {
+      OrderStatus.inProduction => 'in_production',
+      OrderStatus.shipped => 'shipped',
+      // The buyer confirming receipt completes the order.
+      OrderStatus.delivered => o.side == ChatSide.buying ? 'completed' : 'delivered',
+      OrderStatus.cancelled => 'cancelled',
+      _ => throw ArgumentError('Use reviewPayment to confirm an order.'),
+    };
+    await _repo.setStatus(order: o, status: status, note: note);
+    await _reload(catalog: to == OrderStatus.cancelled);
+  }
+
+  Future<void> postReview(Order o, {required int rating, String? comment}) async {
+    await _repo.postReview(order: o, rating: rating, comment: comment);
+    await _reload(catalog: true);
+  }
+}
+
+final orderActionsProvider = Provider<OrderActions>((ref) => OrderActions(ref));
 
 // ---------------------------------------------------------------------------
 // Notifications (Firestore users/{uid}/notifications)

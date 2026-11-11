@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
 /// Plain data classes used by the UI. Catalog and account data are filled from
-/// PostgreSQL (Supabase); chats, orders and notifications still use sample data.
+/// PostgreSQL (Supabase), including orders and custom requests; chats and
+/// notifications still use sample data.
 
 class AppUser {
   const AppUser({
@@ -256,7 +257,70 @@ class ChatThread {
       );
 }
 
-enum RequestStatus { pending, quoted, accepted, declined }
+enum RequestStatus { pending, quoted, accepted, declined, cancelled }
+
+extension RequestStatusX on RequestStatus {
+  String get label => switch (this) {
+        RequestStatus.pending => 'Pending',
+        RequestStatus.quoted => 'Quoted',
+        RequestStatus.accepted => 'Accepted',
+        RequestStatus.declined => 'Declined',
+        RequestStatus.cancelled => 'Cancelled',
+      };
+  Tone get tone => switch (this) {
+        RequestStatus.pending => Tone.warning,
+        RequestStatus.quoted => Tone.info,
+        RequestStatus.accepted => Tone.success,
+        RequestStatus.declined => Tone.error,
+        RequestStatus.cancelled => Tone.neutral,
+      };
+  bool get isOpen => this == RequestStatus.pending || this == RequestStatus.quoted;
+}
+
+/// One version of the seller's price offer for a custom request (QUOTE).
+enum OfferStatus { sent, accepted, changesRequested, declined, superseded }
+
+extension OfferStatusX on OfferStatus {
+  String get label => switch (this) {
+        OfferStatus.sent => 'Waiting for buyer',
+        OfferStatus.accepted => 'Accepted',
+        OfferStatus.changesRequested => 'Changes asked',
+        OfferStatus.declined => 'Declined',
+        OfferStatus.superseded => 'Replaced',
+      };
+  Tone get tone => switch (this) {
+        OfferStatus.sent => Tone.info,
+        OfferStatus.accepted => Tone.success,
+        OfferStatus.changesRequested => Tone.warning,
+        OfferStatus.declined => Tone.error,
+        OfferStatus.superseded => Tone.neutral,
+      };
+}
+
+class QuoteOffer {
+  const QuoteOffer({
+    required this.id,
+    required this.version,
+    required this.price,
+    required this.readyBy,
+    required this.status,
+    required this.createdAt,
+    this.message,
+    this.declineReason,
+  });
+  final String id;
+  final int version;
+  final double price;
+  final DateTime readyBy;
+  final OfferStatus status;
+  final DateTime createdAt;
+
+  /// Seller's note with the price.
+  final String? message;
+
+  /// Why the seller declined, or what the buyer asked to change.
+  final String? declineReason;
+}
 
 class CustomRequest {
   const CustomRequest({
@@ -269,8 +333,16 @@ class CustomRequest {
     required this.sentAt,
     this.budget,
     this.status = RequestStatus.pending,
+    this.id = '',
+    this.side = ChatSide.buying,
+    this.counterpart = '',
+    this.productTitle = '',
+    this.quotes = const [],
+    this.orderNumber,
+    this.imagePaths = const [],
   });
 
+  /// Readable request number (custom_request.request_number), e.g. CR-1063.
   final String code;
   final String productId;
   final String description;
@@ -280,6 +352,33 @@ class CustomRequest {
   final DateTime neededBy;
   final DateTime sentAt;
   final RequestStatus status;
+
+  /// custom_request.request_id
+  final String id;
+
+  /// Buying = I asked for it; selling = a buyer asked my store.
+  final ChatSide side;
+
+  /// The store name (buying) or the buyer's name (selling).
+  final String counterpart;
+  final String productTitle;
+
+  /// Every quote version, oldest first.
+  final List<QuoteOffer> quotes;
+
+  /// The order made when a quote was accepted.
+  final String? orderNumber;
+
+  /// Reference photos in the private-files bucket.
+  final List<String> imagePaths;
+
+  QuoteOffer? get latestQuote => quotes.isEmpty ? null : quotes.last;
+
+  /// The quote the buyer can still accept or answer.
+  QuoteOffer? get openQuote => status == RequestStatus.quoted && latestQuote?.status == OfferStatus.sent ? latestQuote : null;
+
+  /// True when the signed-in user is the one who has to act next.
+  bool get needsMyAction => side == ChatSide.selling ? status == RequestStatus.pending : openQuote != null;
 }
 
 enum OrderStatus { pending, confirmed, inProduction, shipped, delivered, cancelled }
@@ -302,6 +401,8 @@ extension OrderStatusX on OrderStatus {
         OrderStatus.cancelled => Tone.error,
       };
 }
+
+enum PaymentStatus { submitted, verified, rejected }
 
 class OrderEvent {
   const OrderEvent(this.status, this.when, [this.note]);
@@ -327,6 +428,13 @@ class Order {
     this.paymentMethod = 'GCash',
     this.paymentRef,
     this.chatId,
+    this.id = '',
+    this.paymentStatus,
+    this.proofPath,
+    this.dueDate,
+    this.reservedUntil,
+    this.reviewed = false,
+    this.requestCode,
   });
 
   final String number;
@@ -345,7 +453,30 @@ class Order {
   final String? paymentRef;
   final String? chatId;
 
-  Order copyWith({OrderStatus? status, List<OrderEvent>? history, String? paymentRef}) => Order(
+  /// orders.order_id
+  final String id;
+
+  /// State of the latest payment proof (null when none was sent).
+  final PaymentStatus? paymentStatus;
+
+  /// Storage path of the latest payment screenshot (private-files bucket).
+  final String? proofPath;
+  final DateTime? dueDate;
+
+  /// Reserved stock is released after this time if the order is still unpaid.
+  final DateTime? reservedUntil;
+  final bool reviewed;
+
+  /// The custom request (CR-…) this order came from.
+  final String? requestCode;
+
+  /// The buyer still has to send (or re-send) a payment proof.
+  bool get needsProof => status == OrderStatus.pending && (paymentRef == null || paymentStatus == PaymentStatus.rejected);
+
+  /// A proof was sent and the seller has not checked it yet.
+  bool get proofWaiting => status == OrderStatus.pending && paymentRef != null && paymentStatus != PaymentStatus.rejected;
+
+  Order copyWith({OrderStatus? status, List<OrderEvent>? history, String? paymentRef, PaymentStatus? paymentStatus, bool? reviewed}) => Order(
         number: number,
         side: side,
         productId: productId,
@@ -361,6 +492,13 @@ class Order {
         paymentMethod: paymentMethod,
         paymentRef: paymentRef ?? this.paymentRef,
         chatId: chatId,
+        id: id,
+        paymentStatus: paymentStatus ?? this.paymentStatus,
+        proofPath: proofPath,
+        dueDate: dueDate,
+        reservedUntil: reservedUntil,
+        reviewed: reviewed ?? this.reviewed,
+        requestCode: requestCode,
       );
 }
 

@@ -24,6 +24,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final data = ref.watch(ordersDataProvider);
+    final requestsWaiting = ref.watch(requestsNeedingActionProvider);
     final orders = ref
         .watch(ordersProvider)
         .where((o) => o.side == _side)
@@ -54,29 +56,48 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
               AppChip(label: 'In progress', selected: _activeOnly, height: 34, onTap: () => setState(() => _activeOnly = true)),
             ]),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Insets.screen, 0, Insets.screen, 8),
+            child: _RequestsEntry(waiting: requestsWaiting, onTap: () => context.push('/requests${_side == ChatSide.selling ? '?side=selling' : ''}')),
+          ),
           Expanded(
-            child: orders.isEmpty
-                ? ListView(children: [
-                    EmptyState(
-                      icon: CraftIcons.orders,
-                      title: _side == ChatSide.buying ? 'No orders yet' : 'No orders for your store yet',
-                      message: _side == ChatSide.buying ? 'Items you buy or request appear here so you can track them.' : 'Share your store so buyers can find you.',
-                      actionLabel: _side == ChatSide.buying ? 'Start shopping' : 'Post an item',
-                      onAction: () {
-                        if (_side == ChatSide.buying) {
-                          context.go('/home');
-                        } else {
-                          context.push('/sell');
-                        }
-                      },
-                    ),
-                  ])
-                : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(Insets.screen, 4, Insets.screen, 110),
-                    itemCount: orders.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (_, i) => _OrderCard(order: orders[i]),
-                  ),
+            child: RefreshIndicator(
+              onRefresh: () => Future.wait([ref.refresh(ordersDataProvider.future), ref.refresh(requestsDataProvider.future)]),
+              child: data.isLoading && !data.hasValue
+                  ? ListView(children: const [SizedBox(height: 120), Center(child: CircularProgressIndicator())])
+                  : data.hasError && !data.hasValue
+                      ? ListView(children: [
+                          EmptyState(
+                            icon: CraftIcons.info,
+                            title: 'Could not load your orders',
+                            message: data.error is AppFailure ? (data.error as AppFailure).message : 'Please try again.',
+                            actionLabel: 'Try again',
+                            onAction: () => ref.invalidate(ordersDataProvider),
+                          ),
+                        ])
+                      : orders.isEmpty
+                          ? ListView(children: [
+                              EmptyState(
+                                icon: CraftIcons.orders,
+                                title: _side == ChatSide.buying ? 'No orders yet' : 'No orders for your store yet',
+                                message: _side == ChatSide.buying ? 'Items you buy or request appear here so you can track them.' : 'Share your store so buyers can find you.',
+                                actionLabel: _side == ChatSide.buying ? 'Start shopping' : 'Post an item',
+                                onAction: () {
+                                  if (_side == ChatSide.buying) {
+                                    context.go('/home');
+                                  } else {
+                                    context.push('/sell');
+                                  }
+                                },
+                              ),
+                            ])
+                          : ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(Insets.screen, 4, Insets.screen, 110),
+                              itemCount: orders.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 10),
+                              itemBuilder: (_, i) => _OrderCard(order: orders[i]),
+                            ),
+            ),
           ),
         ]),
       ),
@@ -123,8 +144,7 @@ class _OrderCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final p = ref.watch(productProvider(order.productId));
-    final needsAction = (order.side == ChatSide.buying && order.status == OrderStatus.pending && order.paymentRef == null) ||
-        (order.side == ChatSide.selling && order.status == OrderStatus.pending && order.paymentRef != null);
+    final needsAction = (order.side == ChatSide.buying && order.needsProof) || (order.side == ChatSide.selling && order.proofWaiting);
     return Semantics(
       button: true,
       label: 'Order ${order.number}, ${order.itemLabel}, ${order.status.label}, ${Fmt.peso(order.total)}',
@@ -166,7 +186,7 @@ class _OrderCard extends ConsumerWidget {
                   const CraftIcon(CraftIcons.info, size: 16, color: AppColors.amberText),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(order.side == ChatSide.buying ? 'Upload your payment proof' : 'Check and confirm the payment',
+                    child: Text(order.side == ChatSide.buying ? (order.paymentStatus == PaymentStatus.rejected ? 'Payment rejected · upload a new proof' : 'Upload your payment proof') : 'Check and confirm the payment',
                         style: AppText.label.copyWith(color: AppColors.amberText, fontWeight: FontWeight.w700)),
                   ),
                 ]),
@@ -177,4 +197,40 @@ class _OrderCard extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// Shortcut to the custom requests, with how many are waiting for me.
+class _RequestsEntry extends StatelessWidget {
+  const _RequestsEntry({required this.waiting, required this.onTap});
+  final int waiting;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: 'Custom requests${waiting > 0 ? ', $waiting waiting for you' : ''}',
+        excludeSemantics: true,
+        child: Material(
+          color: AppColors.clayTint,
+          borderRadius: Radii.card,
+          child: InkWell(
+            borderRadius: Radii.card,
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(children: [
+                const CraftIcon(CraftIcons.edit, size: 20, color: AppColors.clayText),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Custom requests', style: AppText.bodyStrong.copyWith(color: AppColors.clayText)),
+                    Text('Quotes for made-to-order items', style: AppText.small.copyWith(color: AppColors.grayBrown)),
+                  ]),
+                ),
+                if (waiting > 0) ...[StatusPill('$waiting waiting', tone: Tone.warning, filled: true), const SizedBox(width: 6)],
+                const CraftIcon(CraftIcons.chevron, size: 18, color: AppColors.clayText),
+              ]),
+            ),
+          ),
+        ),
+      );
 }

@@ -6,6 +6,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/format.dart';
 import '../../data/providers.dart';
+import '../../shared/widgets/action_helpers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
@@ -26,7 +27,7 @@ class _CustomOrderScreenState extends ConsumerState<CustomOrderScreen> {
   final Set<String> _options = {};
   int _qty = 1;
   DateTime? _neededBy;
-  bool _hasPhoto = false;
+  PickedImage? _photo;
   bool _busy = false;
   bool _dateError = false;
 
@@ -52,32 +53,42 @@ class _CustomOrderScreenState extends ConsumerState<CustomOrderScreen> {
     });
   }
 
+  Future<void> _addPhoto() async {
+    final photo = await pickOnePhoto(context);
+    if (photo != null && mounted) setState(() => _photo = photo);
+  }
+
   Future<void> _send() async {
     FocusScope.of(context).unfocus();
     final ok = _form.currentState!.validate();
     setState(() => _dateError = _neededBy == null);
     if (!ok || _neededBy == null) return;
     setState(() => _busy = true);
-    await Future<void>.delayed(const Duration(milliseconds: 600));
     final budget = double.tryParse(_budget.text.replaceAll(RegExp(r'[^0-9.]'), ''));
-    final r = ref.read(requestsProvider.notifier).submit(
-          productId: widget.productId,
-          description: _desc.text.trim(),
-          options: _options.toList(),
-          quantity: _qty,
-          neededBy: _neededBy!,
-          budget: budget,
-        );
-    if (!mounted) return;
-    setState(() => _busy = false);
-    context.pushReplacement('/request-sent/${r.code}');
+    try {
+      final code = await ref.read(customOrderActionsProvider).submit(CustomRequestInput(
+            productId: widget.productId,
+            description: _desc.text.trim(),
+            options: _options.toList(),
+            quantity: _qty,
+            neededBy: _neededBy!,
+            budget: budget,
+            photo: _photo,
+          ));
+      if (!mounted) return;
+      context.pushReplacement('/request-sent/$code');
+    } on AppFailure catch (e) {
+      if (mounted) showMessage(context, e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final p = ref.watch(productProvider(widget.productId));
-    if (p == null) return const Scaffold(body: SizedBox());
-    final seller = ref.watch(sellerProvider(p.sellerId))!;
+    if (p == null) return const Scaffold(appBar: ScreenHeader(title: 'Custom order'), body: SizedBox());
+    final seller = ref.watch(sellerProvider(p.sellerId));
 
     return Scaffold(
       appBar: const ScreenHeader(title: 'Custom order'),
@@ -89,7 +100,7 @@ class _CustomOrderScreenState extends ConsumerState<CustomOrderScreen> {
             child: Form(
               key: _form,
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                ProductSummaryRow(product: p, title: p.title, subtitle: '${seller.name} · base price ${Fmt.peso(p.price)}'),
+                ProductSummaryRow(product: p, title: p.title, subtitle: '${seller?.name ?? 'Maker'} · base price ${Fmt.peso(p.price)}'),
                 const SizedBox(height: 16),
                 LabeledField(
                   label: 'What do you want customized?',
@@ -143,21 +154,23 @@ class _CustomOrderScreenState extends ConsumerState<CustomOrderScreen> {
                 const SizedBox(height: 14),
                 Text('Reference photo (optional)', style: AppText.label),
                 const SizedBox(height: 6),
-                if (_hasPhoto)
+                if (_photo != null)
                   Container(
                     height: 64,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(color: AppColors.white, borderRadius: Radii.field, border: Border.all(color: AppColors.linen, width: 1.5)),
                     child: Row(children: [
-                      Container(width: 44, height: 44, decoration: BoxDecoration(color: AppColors.paleSage, borderRadius: BorderRadius.circular(8)),
-                          child: const Center(child: CraftIcon(CraftIcons.image, size: 22, color: AppColors.moss))),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.memory(_photo!.bytes, width: 44, height: 44, fit: BoxFit.cover),
+                      ),
                       const SizedBox(width: 10),
-                      Expanded(child: Text('reference_photo.jpg', style: AppText.label)),
-                      IconButton(tooltip: 'Remove photo', onPressed: () => setState(() => _hasPhoto = false), icon: const CraftIcon(CraftIcons.close, size: 18, color: AppColors.grayBrown)),
+                      Expanded(child: Text(_photo!.fileName, style: AppText.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      IconButton(tooltip: 'Remove photo', onPressed: () => setState(() => _photo = null), icon: const CraftIcon(CraftIcons.close, size: 18, color: AppColors.grayBrown)),
                     ]),
                   )
                 else
-                  DashedAddBox(label: 'Add a photo', onTap: () => setState(() => _hasPhoto = true)),
+                  DashedAddBox(label: 'Add a photo', onTap: _addPhoto),
                 const SizedBox(height: 16),
                 const InfoNote('The seller reviews your request and replies with a price. You pay only after you accept the quote.'),
                 const SizedBox(height: 18),

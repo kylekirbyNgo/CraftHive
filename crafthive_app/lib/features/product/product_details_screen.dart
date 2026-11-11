@@ -10,6 +10,7 @@ import '../../data/providers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
+import '../orders/checkout_sheet.dart';
 
 /// Screen 5 – Product details: photo gallery, price, rating, stock, seller card,
 /// description, custom options, and the Custom order / Buy now buttons.
@@ -234,13 +235,8 @@ class _BottomActions extends ConsumerWidget {
                 Expanded(
                   child: AppButton(
                     label: canBuy ? 'Buy now' : 'Sold out',
-                    icon: CraftIcons.chat,
-                    onPressed: canBuy
-                        ? () {
-                            final id = ref.read(chatsProvider.notifier).openForProduct(product, seller);
-                            context.push('/chat/$id');
-                          }
-                        : null,
+                    icon: CraftIcons.wallet,
+                    onPressed: canBuy ? () => showCheckout(context, product, seller) : null,
                   ),
                 ),
               ]),

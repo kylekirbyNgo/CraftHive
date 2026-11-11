@@ -12,7 +12,7 @@ import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
 
 /// Screen 7 – Request sent: waiting for the seller, request summary with a
-/// Pending pill, progress steps, and links to the chat or Home.
+/// Pending pill, progress steps, and links to the request or Home.
 class RequestSentScreen extends ConsumerWidget {
   const RequestSentScreen({super.key, required this.code});
   final String code;
@@ -21,9 +21,10 @@ class RequestSentScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final r = ref.watch(requestProvider(code));
     if (r == null) return const Scaffold(appBar: ScreenHeader(title: 'Request sent'), body: SizedBox());
-    final p = ref.watch(productProvider(r.productId))!;
-    final seller = ref.watch(sellerProvider(p.sellerId))!;
+    final p = ref.watch(productProvider(r.productId));
+    final seller = p == null ? null : ref.watch(sellerProvider(p.sellerId));
     final accepted = r.status == RequestStatus.accepted;
+    final quoted = r.status == RequestStatus.quoted || accepted;
 
     return Scaffold(
       appBar: const ScreenHeader(title: 'Request sent'),
@@ -44,7 +45,7 @@ class RequestSentScreen extends ConsumerWidget {
               const SizedBox(height: 14),
               Text('Waiting for the seller', style: AppText.headline.copyWith(fontSize: 21), textAlign: TextAlign.center),
               const SizedBox(height: 6),
-              Text('${seller.name} usually replies within ${seller.replyTime.replaceFirst('about ', '')}. We will notify you when they accept or decline.',
+              Text('${r.counterpart.isEmpty ? 'The maker' : r.counterpart} usually replies within ${(seller?.replyTime ?? 'a few hours').replaceFirst('about ', '')}. Check Orders › Custom requests for their quote.',
                   style: AppText.body.copyWith(color: AppColors.grayBrown, fontSize: 13.5), textAlign: TextAlign.center),
               const SizedBox(height: 18),
               Container(
@@ -53,15 +54,14 @@ class RequestSentScreen extends ConsumerWidget {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     Expanded(child: Text('Request ${r.code}', style: AppText.label.copyWith(fontWeight: FontWeight.w700))),
-                    StatusPill(accepted ? 'Accepted' : 'Pending', tone: accepted ? Tone.success : Tone.warning, filled: true),
+                    StatusPill(r.status.label, tone: r.status.tone, filled: true),
                   ]),
                   const SizedBox(height: 10),
                   Row(children: [
-                    ProductPhoto(product: p, width: 48, height: 48, radius: 10),
-                    const SizedBox(width: 12),
+                    if (p != null) ...[ProductPhoto(product: p, width: 48, height: 48, radius: 10), const SizedBox(width: 12)],
                     Expanded(
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text('${p.title} × ${r.quantity}', style: AppText.bodyStrong.copyWith(fontSize: 13.5), maxLines: 1, overflow: TextOverflow.ellipsis),
+                        Text('${r.productTitle.isEmpty ? (p?.title ?? 'Item') : r.productTitle} × ${r.quantity}', style: AppText.bodyStrong.copyWith(fontSize: 13.5), maxLines: 1, overflow: TextOverflow.ellipsis),
                         const SizedBox(height: 2),
                         Text('${r.budget != null ? 'Budget ${Fmt.peso(r.budget!)} · ' : ''}needed by ${Fmt.shortDate(r.neededBy)}', style: AppText.caption),
                       ]),
@@ -75,18 +75,11 @@ class RequestSentScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 20),
               _Step(title: 'Request sent', sub: Fmt.stamp(r.sentAt), state: _S.done),
-              _Step(title: 'Seller is reviewing', sub: 'Accepts with a price, or declines with a reason', state: accepted ? _S.done : _S.now),
-              _Step(title: 'You confirm the quote', sub: 'Pay the seller and track the order in chat', state: accepted ? _S.now : _S.next),
+              _Step(title: 'Seller is reviewing', sub: 'Accepts with a price, or declines with a reason', state: quoted ? _S.done : _S.now),
+              _Step(title: 'You confirm the quote', sub: 'Pay the seller and track the order in Orders', state: accepted ? _S.done : (quoted ? _S.now : _S.next)),
               const _Step(title: 'Made and delivered', sub: 'The seller updates progress with photos', state: _S.next, last: true),
               const SizedBox(height: 22),
-              AppButton(
-                label: 'Open chat with seller',
-                icon: CraftIcons.chat,
-                onPressed: () {
-                  final id = ref.read(chatsProvider.notifier).openForProduct(p, seller, note: 'from your custom request');
-                  context.push('/chat/$id');
-                },
-              ),
+              AppButton(label: 'View request', icon: CraftIcons.orders, onPressed: () => context.pushReplacement('/request/${r.code}')),
               const SizedBox(height: 10),
               AppButton(label: 'Back to home', kind: ButtonKind.outline, onPressed: () => context.go('/home')),
             ]),

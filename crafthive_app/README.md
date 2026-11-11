@@ -26,6 +26,24 @@ flutter run -d chrome        # optional: run in the browser
 
 **Demo login:** any username (for example `ana.makes`) with any password of 8 or more characters (for example `craftlover8`). Signing up also works and logs you in.
 
+## Orders and custom orders (Milestone 3)
+
+Orders and custom requests are saved in PostgreSQL through the functions in
+`database/04_orders_and_custom_orders.sql`. **Run that file once in Supabase → SQL Editor**
+(after 01 and 02). It adds:
+
+- **Buy now** → `place_order`: reserves stock for 24 hours (made-to-order when out of stock);
+  unpaid reservations are released by `release_expired_reservations`.
+- **Payment proof** → `submit_payment`: receipt photo in the `private-files` bucket; reused reference
+  numbers and receipt images (SHA-256) are rejected. The seller confirms or rejects it with `review_payment`.
+- **Progress** → `set_order_status`: seller marks in production / shipped, buyer confirms receipt,
+  either can cancel while unpaid. A trigger only allows valid status steps; every change is logged in
+  `order_status_history`.
+- **Custom request** → `submit_custom_request`; the seller answers with `send_quote` (new versions
+  replace old ones) or `decline_custom_request`; the buyer uses `respond_to_quote` to accept (creates the
+  order and books a weekly capacity slot) or ask for changes, or `cancel_custom_request`.
+- `my_orders` and `my_custom_requests` return everything the screens show in one call each.
+
 ## Screens
 
 | # | Screen | Route |
@@ -44,8 +62,11 @@ flutter run -d chrome        # optional: run in the browser
 | 8 | Chat (quote card: Confirm order / Ask for changes; seller: Send a quote) | `/chat/:id` |
 | 9–10 | Messages with Buying and Selling tabs | `/messages` |
 | 11 | New listing (Sell) and Edit listing | `/sell`, `/listing/:id/edit` |
-| – | Orders (Buying / Selling) | `/orders` |
-| – | Order details (timeline, payment proof, status actions, review) | `/order/:number` |
+| – | Checkout (Buy now: quantity, total, place order) | sheet on `/product/:id` |
+| – | Orders (Buying / Selling, Custom requests shortcut) | `/orders` |
+| – | Order details (timeline, payment proof upload/check, status actions, cancel, review) | `/order/:number` |
+| – | Custom requests (Buying / Selling) | `/requests` |
+| – | Request details (quotes, Send a quote / Decline, Accept / Ask for changes / Cancel) | `/request/:code` |
 | – | Saved items | `/saved` |
 | – | Notifications | `/notifications` |
 

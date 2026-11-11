@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../data/models.dart' show ChatSide;
 import '../../data/providers.dart';
 import '../../features/auth/forgot_password_screen.dart';
 import '../../features/auth/login_screen.dart';
@@ -9,7 +10,9 @@ import '../../features/auth/reset_password_screen.dart';
 import '../../features/auth/signup_screen.dart';
 import '../../features/auth/splash_screen.dart';
 import '../../features/custom_order/custom_order_screen.dart';
+import '../../features/custom_order/request_details_screen.dart';
 import '../../features/custom_order/request_sent_screen.dart';
+import '../../features/custom_order/requests_screen.dart';
 import '../../features/home/home_screen.dart';
 import '../../features/home/search_screen.dart';
 import '../../features/messages/chat_screen.dart';
@@ -104,6 +107,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         ],
       ),
       GoRoute(parentNavigatorKey: _rootKey, path: '/request-sent/:code', builder: (_, s) => RequestSentScreen(code: s.pathParameters['code']!)),
+      GoRoute(
+        parentNavigatorKey: _rootKey,
+        path: '/requests',
+        builder: (_, s) => RequestsScreen(initialSide: s.uri.queryParameters['side'] == 'selling' ? ChatSide.selling : ChatSide.buying),
+      ),
+      GoRoute(parentNavigatorKey: _rootKey, path: '/request/:code', builder: (_, s) => RequestDetailsScreen(code: s.pathParameters['code']!)),
       GoRoute(parentNavigatorKey: _rootKey, path: '/chat/:id', builder: (_, s) => ChatScreen(threadId: s.pathParameters['id']!)),
       GoRoute(parentNavigatorKey: _rootKey, path: '/sell', builder: (_, __) => const NewListingScreen()),
       GoRoute(parentNavigatorKey: _rootKey, path: '/listing/:id/edit', builder: (_, s) => NewListingScreen(editId: s.pathParameters['id'])),

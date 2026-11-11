@@ -5,7 +5,9 @@ import 'package:go_router/go_router.dart';
 import '../../data/providers.dart';
 import '../../features/auth/forgot_password_screen.dart';
 import '../../features/auth/login_screen.dart';
+import '../../features/auth/reset_password_screen.dart';
 import '../../features/auth/signup_screen.dart';
+import '../../features/auth/splash_screen.dart';
 import '../../features/custom_order/custom_order_screen.dart';
 import '../../features/custom_order/request_sent_screen.dart';
 import '../../features/home/home_screen.dart';
@@ -25,10 +27,16 @@ import '../../shared/widgets/main_shell.dart';
 
 final _rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');
 
-/// Re-runs the router's redirect whenever the signed-in user changes.
+/// Re-runs the router's redirect whenever the sign-in state changes.
 class _AuthListenable extends ChangeNotifier {
   _AuthListenable(Ref ref) {
-    ref.listen(authProvider, (_, __) => notifyListeners());
+    ref.listen(authStatusProvider, (_, __) => notifyListeners());
+    ref.listen(passwordRecoveryProvider, (_, __) => notifyListeners());
+    // Opening the reset link from the email starts a password recovery.
+    final sub = ref.read(authRepositoryProvider).passwordRecoveryEvents.listen((_) {
+      ref.read(passwordRecoveryProvider.notifier).state = true;
+    });
+    ref.onDispose(sub.cancel);
   }
 }
 
@@ -42,16 +50,28 @@ final routerProvider = Provider<GoRouter>((ref) {
 
   return GoRouter(
     navigatorKey: _rootKey,
-    initialLocation: '/login',
+    initialLocation: '/splash',
     refreshListenable: refresh,
     redirect: (context, state) {
-      final signedIn = ref.read(authProvider) != null;
-      final atPublic = publicPaths.contains(state.matchedLocation);
-      if (!signedIn && !atPublic) return '/login';
-      if (signedIn && atPublic) return '/home';
-      return null;
+      final loc = state.matchedLocation;
+      final status = ref.read(authStatusProvider);
+      // Opened the reset link: choose a new password before anything else.
+      if (ref.read(passwordRecoveryProvider) && status == AuthStatus.signedIn) {
+        return loc == '/reset-password' ? null : '/reset-password';
+      }
+      switch (status) {
+        case AuthStatus.checking:
+        case AuthStatus.profileError:
+          return loc == '/splash' ? null : '/splash';
+        case AuthStatus.signedOut:
+          return publicPaths.contains(loc) ? null : '/login';
+        case AuthStatus.signedIn:
+          return publicPaths.contains(loc) || loc == '/splash' || loc == '/reset-password' ? '/home' : null;
+      }
     },
     routes: [
+      GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
+      GoRoute(path: '/reset-password', builder: (_, __) => const ResetPasswordScreen()),
       GoRoute(path: '/', redirect: (_, __) => '/home'),
       GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
       GoRoute(path: '/signup', builder: (_, __) => const SignupScreen()),

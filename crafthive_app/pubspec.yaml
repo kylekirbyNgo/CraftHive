@@ -1,7 +1,7 @@
 name: crafthive
 description: CraftHive – an all-in-one Android marketplace for handmade and custom-made products.
 publish_to: "none"
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -13,6 +13,9 @@ dependencies:
   go_router: ^14.6.2
   flutter_svg: ^2.0.10
   google_fonts: ^6.2.1
+  supabase_flutter: ^2.8.0
+  shared_preferences: ^2.3.2
+  image_picker: ^1.1.2
 
 dev_dependencies:
   flutter_test:

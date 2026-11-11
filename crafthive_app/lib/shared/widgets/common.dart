@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_colors.dart';
@@ -195,6 +196,10 @@ class LabeledField extends StatelessWidget {
     this.readOnly = false,
     this.onTap,
     this.autofillHints,
+    this.onSubmitted,
+    this.errorText,
+    this.inputFormatters,
+    this.enabled = true,
   });
 
   final String label;
@@ -214,6 +219,12 @@ class LabeledField extends StatelessWidget {
   final bool readOnly;
   final VoidCallback? onTap;
   final Iterable<String>? autofillHints;
+  final ValueChanged<String>? onSubmitted;
+
+  /// An error from the server (e.g. "username taken"), shown under the field.
+  final String? errorText;
+  final List<TextInputFormatter>? inputFormatters;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -233,11 +244,17 @@ class LabeledField extends StatelessWidget {
           readOnly: readOnly,
           onTap: onTap,
           autofillHints: autofillHints,
+          onFieldSubmitted: onSubmitted,
+          inputFormatters: inputFormatters,
+          enabled: enabled,
           textInputAction: textInputAction ?? (maxLines > 1 ? TextInputAction.newline : TextInputAction.next),
           style: AppText.body.copyWith(fontSize: 15),
           decoration: InputDecoration(
             hintText: hint,
             helperText: helper,
+            helperMaxLines: 2,
+            errorText: errorText,
+            errorMaxLines: 3,
             prefixText: prefixText,
             prefixStyle: AppText.body.copyWith(fontSize: 15, fontWeight: FontWeight.w600),
             prefixIcon: icon == null ? null : Padding(padding: const EdgeInsets.only(left: 14, right: 10), child: CraftIcon(icon!, size: 18, color: AppColors.grayBrown)),

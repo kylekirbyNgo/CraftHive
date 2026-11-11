@@ -39,7 +39,9 @@ class HomeScreen extends ConsumerWidget {
     final catalog = ref.watch(catalogDataProvider);
     final loading = catalog.isLoading && !catalog.hasValue;
     final failed = catalog.hasError && !catalog.hasValue;
-    final products = ref.watch(catalogProvider).where((p) => p.status == ListingStatus.active && p.sellerId != 'me').toList();
+    // Every published listing, newest first, including the user's own (so a seller
+    // sees their new item right away). Featured never includes the user's own items.
+    final products = ref.watch(catalogProvider).where((p) => p.status == ListingStatus.active).toList();
     final featured = products.where((p) => p.isFeatured).toList();
     final explore = products.where((p) => !p.isFeatured).toList();
     final categories = ref.watch(categoriesProvider);

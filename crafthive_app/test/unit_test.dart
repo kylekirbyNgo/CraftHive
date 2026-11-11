@@ -2,6 +2,7 @@ import 'package:crafthive/core/utils/validators.dart';
 import 'package:crafthive/data/models.dart';
 import 'package:crafthive/data/repositories/auth_repository.dart';
 import 'package:crafthive/data/repositories/catalog_repository.dart';
+import 'package:crafthive/data/repositories/listing_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -107,11 +108,47 @@ void main() {
       expect(initialsOf('layerlab'), 'LA');
     });
 
+    test('photo paths are kept next to the photo links', () {
+      final p = productFromRow(row('p1'), sellerId: 's1', imageUrl: (path) => 'https://cdn/$path');
+      expect(p.imagePaths, ['s1/p1/1.jpg']);
+    });
+
     test('the signed-in user\'s store is marked "me"', () {
       final s = sellerFromRow({'store_id': 's9', 'store_name': 'My Shop', 'city': 'Cebu City', 'verification_status': 'verified', 'rating': 4.8, 'items_sold_count': 12}, isMine: true);
       expect(s.id, 'me');
       expect(s.isVerified, isTrue);
       expect(s.sold, 12);
+    });
+  });
+
+  group('Listings', () {
+    test('a listing becomes a PRODUCT row', () {
+      const input = ListingInput(
+        title: 'Crochet Tote Bag',
+        categoryId: 'c5',
+        price: 680,
+        stock: 0,
+        leadDays: 4,
+        description: '',
+        acceptsCustom: true,
+        customOptions: ['Color'],
+        photos: [],
+        isDraft: true,
+      );
+      final r = input.toRow();
+      expect(r['title'], 'Crochet Tote Bag');
+      expect(r['stock_quantity'], 0);
+      expect(r['lead_time_days'], 4);
+      expect(r['description'], isNull);
+      expect(r['is_draft'], isTrue);
+      expect(r.containsKey('store_id'), isFalse);
+    });
+
+    test('photo file types match the product-images bucket', () {
+      expect(photoType('IMG_1.JPG').mime, 'image/jpeg');
+      expect(photoType('a.png'), (ext: 'png', mime: 'image/png'));
+      expect(photoType('a.webp').ext, 'webp');
+      expect(photoType('scaled_1234').mime, 'image/jpeg');
     });
   });
 }

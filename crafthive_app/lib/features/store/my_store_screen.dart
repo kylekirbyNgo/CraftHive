@@ -285,11 +285,13 @@ class _ListingRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = product;
-    final (status, tone) = p.isSoldOut
-        ? ('Sold out', Tone.error)
-        : p.isLowStock
-            ? ('Low stock', Tone.warning)
-            : ('Active', Tone.success);
+    final (status, tone) = p.status == ListingStatus.hidden
+        ? ('Draft', Tone.neutral)
+        : p.isSoldOut
+            ? ('Sold out', Tone.error)
+            : p.isLowStock
+                ? ('Low stock', Tone.warning)
+                : ('Active', Tone.success);
     final meta = p.stock > 0
         ? (p.isLowStock ? '${p.stock} left' : '${p.stock} in stock${p.acceptsCustom ? ' · custom ${p.customOptions.isEmpty ? 'orders' : p.customOptions.first.toLowerCase()}' : ''}')
         : (p.leadDays > 0 ? 'Made to order · ${p.leadDays} days' : '0 in stock');

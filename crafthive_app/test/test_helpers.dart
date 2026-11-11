@@ -8,16 +8,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Starts the whole app with in-memory accounts and listings instead of Supabase.
-Future<void> pumpApp(WidgetTester tester, {FakeAuthRepository? auth, FakeCatalogRepository? catalog}) async {
+Future<void> pumpApp(WidgetTester tester, {FakeAuthRepository? auth, FakeCatalogRepository? catalog, FakeListingRepository? listings}) async {
   AppText.useGoogleFonts = false;
   SharedPreferences.setMockInitialValues({});
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3;
   addTearDown(tester.view.reset);
+  final catalogRepo = catalog ?? listings?.catalog ?? FakeCatalogRepository();
   await tester.pumpWidget(ProviderScope(
     overrides: [
       authRepositoryProvider.overrideWithValue(auth ?? FakeAuthRepository()),
-      catalogRepositoryProvider.overrideWithValue(catalog ?? FakeCatalogRepository()),
+      catalogRepositoryProvider.overrideWithValue(catalogRepo),
+      listingRepositoryProvider.overrideWithValue(listings ?? FakeListingRepository(catalogRepo)),
     ],
     child: const CraftHiveApp(),
   ));

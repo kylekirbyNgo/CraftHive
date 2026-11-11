@@ -9,10 +9,12 @@ import 'mock_data.dart';
 import 'models.dart';
 import 'repositories/auth_repository.dart';
 import 'repositories/catalog_repository.dart';
+import 'repositories/listing_repository.dart';
 import 'sample_ids.dart';
 
 export 'repositories/auth_repository.dart' show AppFailure, AuthField, SignUpData, SignUpOutcome;
 export 'repositories/catalog_repository.dart' show CatalogData;
+export 'repositories/listing_repository.dart' show ListingInput, ListingPhoto, StoreInput;
 
 // ---------------------------------------------------------------------------
 // Session (Supabase Auth). The session is kept on the phone, so the user stays
@@ -145,6 +147,15 @@ const _unknownCategory = Category(id: '', name: 'Other', icon: CraftIcons.tag, t
 final categoryProvider = Provider.family<Category, String>(
     (ref, id) => ref.watch(categoriesProvider).where((c) => c.id == id).firstOrNull ?? _unknownCategory);
 
+// ---------------------------------------------------------------------------
+// Selling (PostgreSQL: SELLER, STORE, PRODUCT, PRODUCT_IMAGE, PRODUCT_CUSTOM_OPTION;
+// photos in the product-images Storage bucket)
+// ---------------------------------------------------------------------------
+final listingRepositoryProvider = Provider<ListingRepository>((ref) => SupabaseListingRepository(Supabase.instance.client));
+
+/// The signed-in user's store_id, or null until they open a store (or while the catalog loads).
+final myStoreIdProvider = Provider<String?>((ref) => ref.watch(catalogDataProvider).valueOrNull?.myStoreId);
+
 /// Listings in my own store (seller id "me").
 final myListingsProvider = Provider<List<Product>>(
     (ref) => ref.watch(catalogProvider).where((p) => p.sellerId == 'me' && p.status != ListingStatus.archived).toList());
@@ -177,7 +188,8 @@ enum SortBy { relevance, priceLow, priceHigh, rating }
 List<Product> searchProducts(List<Product> all, List<Seller> sellers, SearchFilters f) {
   final q = f.query.trim().toLowerCase();
   var list = all.where((p) {
-    if (p.status != ListingStatus.active || p.sellerId == 'me') return false;
+    // Published listings only; the user's own are included so they can find them too.
+    if (p.status != ListingStatus.active) return false;
     if (f.categoryId != null && p.categoryId != f.categoryId) return false;
     if (p.price > f.maxPrice) return false;
     if (f.customOnly && !p.acceptsCustom) return false;

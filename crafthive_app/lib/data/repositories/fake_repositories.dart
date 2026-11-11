@@ -4,6 +4,7 @@ import '../mock_data.dart';
 import '../models.dart';
 import 'auth_repository.dart';
 import 'catalog_repository.dart';
+import 'listing_repository.dart';
 
 /// In-memory stand-ins for Supabase, used by the automated tests so they run
 /// without the internet. The app itself always uses the Supabase versions.
@@ -133,12 +134,97 @@ class FakeCatalogRepository implements CatalogRepository {
   AppFailure? failWith;
   int loads = 0;
 
+  /// The demo user's store; null means they have not opened one yet.
+  String? myStoreId = 'store-me';
+
+  /// Listings saved through [FakeListingRepository], newest first.
+  final added = <Product>[];
+
   @override
   Future<CatalogData> load({required String myUserId}) async {
     loads++;
     await Future<void>.delayed(const Duration(milliseconds: 10));
     final f = failWith;
     if (f != null) throw f;
-    return const CatalogData(categories: MockData.categories, sellers: MockData.sellers, products: MockData.products);
+    final addedIds = {for (final p in added) p.id};
+    return CatalogData(
+      categories: MockData.categories,
+      sellers: MockData.sellers,
+      products: [...added, for (final p in MockData.products) if (!addedIds.contains(p.id)) p],
+      myStoreId: myStoreId,
+    );
+  }
+}
+
+class FakeListingRepository implements ListingRepository {
+  FakeListingRepository(this.catalog);
+  final FakeCatalogRepository catalog;
+
+  /// When set, every call fails with this (for testing error messages).
+  AppFailure? failWith;
+  int _next = 1;
+
+  Future<void> _check() async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final f = failWith;
+    if (f != null) throw f;
+  }
+
+  Product _toProduct(String id, ListingInput i, {ListingStatus? status}) => Product(
+        id: id,
+        title: i.title,
+        sellerId: 'me',
+        categoryId: i.categoryId,
+        price: i.price,
+        description: i.description,
+        stock: i.stock,
+        leadDays: i.leadDays,
+        acceptsCustom: i.acceptsCustom,
+        customOptions: i.customOptions,
+        photoCount: i.photos.isEmpty ? 1 : i.photos.length,
+        status: status ?? (i.isDraft ? ListingStatus.hidden : ListingStatus.active),
+      );
+
+  @override
+  Future<String?> findMyStoreId(String userId) async {
+    await _check();
+    return catalog.myStoreId;
+  }
+
+  @override
+  Future<String> openStore(String userId, StoreInput store) async {
+    await _check();
+    return catalog.myStoreId = 'store-me';
+  }
+
+  @override
+  Future<String> createListing({required String storeId, required ListingInput input}) async {
+    await _check();
+    final id = 'new-${_next++}';
+    catalog.added.insert(0, _toProduct(id, input));
+    return id;
+  }
+
+  @override
+  Future<void> updateListing({
+    required String storeId,
+    required String productId,
+    required ListingInput input,
+    required List<String> previousPaths,
+    required List<String> previousOptions,
+  }) async {
+    await _check();
+    catalog.added
+      ..removeWhere((p) => p.id == productId)
+      ..insert(0, _toProduct(productId, input));
+  }
+
+  @override
+  Future<void> archiveListing(String productId) async {
+    await _check();
+    final p = [...catalog.added, ...MockData.products].firstWhere((p) => p.id == productId);
+    catalog.added
+      ..removeWhere((x) => x.id == productId)
+      ..insert(0, p.copyWith(status: ListingStatus.archived));
   }
 }

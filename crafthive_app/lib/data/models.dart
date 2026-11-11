@@ -110,6 +110,7 @@ class Product {
     this.isFeatured = false,
     this.status = ListingStatus.active,
     this.imageUrls = const [],
+    this.imagePaths = const [],
     this.reviewCount = 0,
   });
 
@@ -133,6 +134,10 @@ class Product {
   /// Public photo links from Supabase Storage, cover first. Empty means the
   /// category placeholder is shown.
   final List<String> imageUrls;
+
+  /// The same photos as Storage paths (product_image.image_path), in the same
+  /// order as [imageUrls]. Edit listing needs them to keep or remove photos.
+  final List<String> imagePaths;
   final int reviewCount;
 
   bool get isSoldOut => stock == 0 && leadDays == 0;
@@ -157,6 +162,7 @@ class Product {
         isFeatured: isFeatured ?? this.isFeatured,
         status: status ?? this.status,
         imageUrls: imageUrls,
+        imagePaths: imagePaths,
         reviewCount: reviewCount,
       );
 }

@@ -159,8 +159,8 @@ void main() {
       expect(find.text('Categories'), findsOneWidget);
       expect(find.text('Hand-carved Wooden Spoon'), findsWidgets);
       expect(find.text('Flowers'), findsOneWidget);
-      // The user's own listings are not suggested to them.
-      expect(find.text('Crochet Tote Bag'), findsNothing);
+      // The user's own published listings show too, so a seller sees a new item right away.
+      expect(find.text('Crochet Tote Bag'), findsWidgets);
     });
 
     testWidgets('TC-H02 a failed load shows Try again, which recovers', (tester) async {

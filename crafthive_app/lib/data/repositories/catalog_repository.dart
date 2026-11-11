@@ -9,10 +9,13 @@ import 'auth_repository.dart';
 
 /// Everything Home, Search and the stores need, loaded in one go.
 class CatalogData {
-  const CatalogData({required this.categories, required this.sellers, required this.products});
+  const CatalogData({required this.categories, required this.sellers, required this.products, this.myStoreId});
   final List<Category> categories;
   final List<Seller> sellers;
   final List<Product> products;
+
+  /// The signed-in user's store (store.store_id), or null if they have not opened one yet.
+  final String? myStoreId;
 
   static const empty = CatalogData(categories: [], sellers: [], products: []);
 }
@@ -48,7 +51,7 @@ class SupabaseCatalogRepository implements CatalogRepository {
           for (final r in results[2])
             productFromRow(r, sellerId: r['store_id'] == myStoreId ? 'me' : r['store_id'] as String, imageUrl: _imageUrl),
         ];
-        return CatalogData(categories: categories, sellers: sellers, products: markFeatured(products));
+        return CatalogData(categories: categories, sellers: sellers, products: markFeatured(products), myStoreId: myStoreId);
       });
 
   String _imageUrl(String path) =>
@@ -119,6 +122,7 @@ Product productFromRow(Map<String, dynamic> r, {required String sellerId, requir
     customOptions: [for (final o in (r['custom_options'] as List?) ?? const []) o as String],
     photoCount: paths.isEmpty ? 1 : paths.length,
     imageUrls: [for (final p in paths) imageUrl(p)],
+    imagePaths: paths,
     status: r['is_archived'] == true
         ? ListingStatus.archived
         : r['is_draft'] == true

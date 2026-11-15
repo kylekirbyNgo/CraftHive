@@ -1,0 +1,20 @@
+{
+  "rules": {
+    "status": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['online', 'lastSeen']) && newData.child('online').isBoolean()"
+      }
+    },
+    "typing": {
+      "$chatId": {
+        ".read": "auth != null",
+        "$uid": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "!newData.exists() || newData.child('isTyping').isBoolean()"
+        }
+      }
+    }
+  }
+}

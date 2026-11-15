@@ -9,6 +9,10 @@ MANIFEST=android/app/src/main/AndroidManifest.xml
 if ! grep -q "android.permission.INTERNET" "$MANIFEST"; then
   sed -i.bak 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST" && rm -f "$MANIFEST.bak"
 fi
+# Push notifications need this permission on Android 13 and newer (Firebase Cloud Messaging)
+if ! grep -q "android.permission.POST_NOTIFICATIONS" "$MANIFEST"; then
+  sed -i.bak 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application#' "$MANIFEST" && rm -f "$MANIFEST.bak"
+fi
 # Show the app name as "CraftHive" under the icon
 sed -i.bak 's#android:label="crafthive"#android:label="CraftHive"#' "$MANIFEST" && rm -f "$MANIFEST.bak"
 # Password-reset links from the email open the app (Supabase Auth)

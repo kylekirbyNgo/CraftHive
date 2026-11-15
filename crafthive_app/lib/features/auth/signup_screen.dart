@@ -38,7 +38,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   String? _error;
 
   static const _countries = ['Philippines', 'Singapore', 'Malaysia', 'Indonesia', 'Thailand', 'Vietnam', 'Other'];
-  static const _codes = {'Philippines': '+63', 'Singapore': '+65', 'Malaysia': '+60', 'Indonesia': '+62', 'Thailand': '+66', 'Vietnam': '+84', 'Other': '+'};
+  static const _codes = Validators.dialCodes;
 
   @override
   void dispose() {

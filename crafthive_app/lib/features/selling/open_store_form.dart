@@ -59,7 +59,7 @@ class _OpenStoreFormState extends ConsumerState<OpenStoreForm> {
             ),
           );
       // My store's profile card reads the description and city from the store.
-      ref.read(authProvider.notifier).updateProfile(_user.copyWith(bio: _desc.text.trim(), location: _city.text.trim()));
+      ref.read(authProvider.notifier).updateProfile(_user.copyWith(bio: _desc.text.trim(), location: _city.text.trim(), hasStore: true));
       if (!mounted) return;
       showMessage(context, 'Your store is open. Now add your first item.');
       widget.onOpened(storeId);

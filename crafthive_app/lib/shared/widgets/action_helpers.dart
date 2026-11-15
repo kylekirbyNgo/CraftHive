@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/theme/app_colors.dart';
@@ -11,11 +12,11 @@ import 'craft_icon.dart';
 
 const _maxPhotoBytes = 5 * 1024 * 1024;
 
-/// Picks one photo from the gallery (a receipt screenshot or a reference photo).
-/// The picker shrinks it first; files over 5 MB are refused like listing photos.
-Future<PickedImage?> pickOnePhoto(BuildContext context) async {
+/// Picks one photo from the gallery (a receipt screenshot, reference photo or profile photo).
+/// The picker shrinks it to [maxSide] pixels first; files over 5 MB are refused like listing photos.
+Future<PickedImage?> pickOnePhoto(BuildContext context, {double maxSide = 1600}) async {
   try {
-    final f = await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1600, maxHeight: 1600, imageQuality: 85);
+    final f = await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: maxSide, maxHeight: maxSide, imageQuality: 85);
     if (f == null) return null;
     final bytes = await f.readAsBytes();
     if (bytes.lengthInBytes > _maxPhotoBytes) {
@@ -39,7 +40,20 @@ Future<bool> runWithMessage(BuildContext context, Future<void> Function() action
   } on AppFailure catch (e) {
     if (context.mounted) showMessage(context, e.message);
     return false;
+  } catch (e, st) {
+    // A bug, not a server message: still stop the spinner and tell the user.
+    debugPrint('Unexpected error: $e\n$st');
+    if (context.mounted) showMessage(context, 'Something went wrong. Please try again.');
+    return false;
   }
+}
+
+/// Opens (or first creates) a chat, then shows it. [open] returns the chat ID.
+Future<void> openChat(BuildContext context, Future<String> Function() open) async {
+  String? id;
+  final ok = await runWithMessage(context, () async => id = await open());
+  final chatId = id;
+  if (ok && chatId != null && context.mounted) context.push('/chat/$chatId');
 }
 
 /// Yes/no question before something that cannot be undone.

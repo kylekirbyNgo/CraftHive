@@ -326,20 +326,36 @@ class StatusPill extends StatelessWidget {
 }
 
 class Avatar extends StatelessWidget {
-  const Avatar({super.key, required this.initials, this.size = 40, this.color = AppColors.clay, this.ring = false, this.online = false});
+  const Avatar({super.key, required this.initials, this.size = 40, this.color = AppColors.clay, this.ring = false, this.online = false, this.imageUrl});
   final String initials;
   final double size;
   final Color color;
   final bool ring;
   final bool online;
+
+  /// Profile photo; the initials show while it loads or if it cannot be loaded.
+  final String? imageUrl;
+
   @override
   Widget build(BuildContext context) {
+    final letters = Text(initials, style: AppText.bodyStrong.copyWith(color: AppColors.white, fontSize: size * 0.36));
+    final url = imageUrl;
     final circle = Container(
       width: size,
       height: size,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle, border: ring ? Border.all(color: AppColors.softHoney, width: 2) : null),
       alignment: Alignment.center,
-      child: Text(initials, style: AppText.bodyStrong.copyWith(color: AppColors.white, fontSize: size * 0.36)),
+      clipBehavior: Clip.antiAlias,
+      child: url == null || url.isEmpty
+          ? letters
+          : Image.network(
+              url,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              loadingBuilder: (_, child, progress) => progress == null ? child : Center(child: letters),
+              errorBuilder: (_, __, ___) => Center(child: letters),
+            ),
     );
     if (!online) return ExcludeSemantics(child: circle);
     return ExcludeSemantics(

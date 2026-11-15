@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io' show SocketException;
+import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models.dart';
+import 'listing_repository.dart' show photoType;
 
 /// A problem the user can fix, with a message that is safe to show on screen.
 class AppFailure implements Exception {
@@ -46,6 +48,17 @@ class SignUpData {
   final String password;
 }
 
+/// Changes from Edit profile. Store fields are saved only when the user has a store.
+class ProfileUpdate {
+  const ProfileUpdate({required this.fullName, required this.phoneDigits, this.storeDescription, this.city});
+  final String fullName;
+
+  /// Digits with the country code (users.phone_number), e.g. 639171234567.
+  final String phoneDigits;
+  final String? storeDescription;
+  final String? city;
+}
+
 /// Sign-in, sign-up and password reset. Supabase Auth keeps the session on the
 /// phone, so the user stays logged in after closing the app.
 abstract class AuthRepository {
@@ -64,6 +77,16 @@ abstract class AuthRepository {
   Stream<void> get passwordRecoveryEvents;
   Future<void> updatePassword(String newPassword);
   Future<void> signOut();
+
+  /// Saves name and phone (USERS), and store description and city (STORE) when given.
+  Future<void> updateProfile(ProfileUpdate update);
+
+  /// Uploads a new profile photo to the avatars bucket and returns its public link.
+  Future<String> uploadAvatar(Uint8List bytes, String fileName);
+
+  /// Starts an email change: a confirmation link is sent to the new address,
+  /// and the email changes after it is opened.
+  Future<void> changeEmail(String newEmail);
 }
 
 const wrongLoginMessage = 'Wrong username or password. Please try again.';
@@ -86,7 +109,7 @@ class SupabaseAuthRepository implements AuthRepository {
   Future<AppUser> loadProfile(String userId) => guard(() async {
         final row = await _db
             .from('users')
-            .select('user_id, full_name, email, username, phone_number, sex, country')
+            .select('user_id, full_name, email, username, phone_number, sex, country, avatar_path')
             .eq('user_id', userId)
             .maybeSingle();
         if (row == null) {
@@ -104,7 +127,58 @@ class SupabaseAuthRepository implements AuthRepository {
           bio: (store?['store_description'] as String?) ?? '',
           location: (store?['city'] as String?) ?? (row['country'] as String),
           isVerified: store?['verification_status'] == 'verified',
+          avatarUrl: _avatarUrl(row['avatar_path'] as String?),
+          hasStore: store != null,
+          phoneDigits: row['phone_number'] as String,
         );
+      });
+
+  String? _avatarUrl(String? path) => path == null || path.isEmpty ? null : _db.storage.from('avatars').getPublicUrl(path);
+
+  String get _uid {
+    final id = _db.auth.currentUser?.id;
+    if (id == null) throw const AppFailure('Please log in again.');
+    return id;
+  }
+
+  @override
+  Future<void> updateProfile(ProfileUpdate u) => guard(() async {
+        final uid = _uid;
+        await _db.from('users').update({'full_name': u.fullName.trim(), 'phone_number': u.phoneDigits}).eq('user_id', uid);
+        if (u.storeDescription != null || u.city != null) {
+          await _db.from('store').update({
+            if (u.storeDescription != null) 'store_description': u.storeDescription!.trim().isEmpty ? null : u.storeDescription!.trim(),
+            if (u.city != null) 'city': u.city!.trim(),
+          }).eq('seller_id', uid);
+        }
+      });
+
+  @override
+  Future<String> uploadAvatar(Uint8List bytes, String fileName) => guard(() async {
+        final uid = _uid;
+        final type = photoType(fileName);
+        // A new name each time, so phones do not keep showing the old photo from their cache.
+        final path = '$uid/avatar_${DateTime.now().millisecondsSinceEpoch}.${type.ext}';
+        final old = await _db.from('users').select('avatar_path').eq('user_id', uid).maybeSingle();
+        await _db.storage.from('avatars').uploadBinary(path, bytes, fileOptions: FileOptions(contentType: type.mime));
+        await _db.from('users').update({'avatar_path': path}).eq('user_id', uid);
+        final oldPath = old?['avatar_path'] as String?;
+        if (oldPath != null && oldPath.isNotEmpty && oldPath != path) {
+          try {
+            await _db.storage.from('avatars').remove([oldPath]);
+          } catch (_) {
+            // Removing the old file is only tidying up.
+          }
+        }
+        return _db.storage.from('avatars').getPublicUrl(path);
+      });
+
+  @override
+  Future<void> changeEmail(String newEmail) => guard(() async {
+        final email = newEmail.trim().toLowerCase();
+        final free = await _db.rpc<bool>('is_email_available', params: {'p_email': email});
+        if (!free) throw const AppFailure('An account with this email already exists.', field: AuthField.email);
+        await _db.auth.updateUser(UserAttributes(email: email));
       });
 
   @override
@@ -168,6 +242,12 @@ class SupabaseAuthRepository implements AuthRepository {
     } on PostgrestException catch (e) {
       if (_looksOffline(e.message)) throw const AppFailure(offlineMessage);
       throw const AppFailure(serverMessage);
+    } on StorageException catch (e) {
+      if (_looksOffline(e.message)) throw const AppFailure(offlineMessage);
+      if (e.statusCode == '413' || e.message.toLowerCase().contains('size')) {
+        throw const AppFailure('That photo is too large. Choose one under 2 MB.');
+      }
+      throw const AppFailure('The photo could not be uploaded. Please try again.');
     } on SocketException {
       throw const AppFailure(offlineMessage);
     } catch (e) {
@@ -201,6 +281,7 @@ class SupabaseAuthRepository implements AuthRepository {
     if (code == 'otp_expired' || msg.contains('expired')) return 'That reset link has expired. Ask for a new one.';
     if (msg.contains('database error saving new user')) return 'That username or email was just taken. Try another one.';
     if (code == 'signup_disabled') return 'Sign-ups are closed right now. Please try again later.';
+    if (code == 'email_exists' || msg.contains('already been registered')) return 'An account with this email already exists.';
     return serverMessage;
   }
 }

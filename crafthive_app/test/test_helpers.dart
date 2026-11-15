@@ -7,10 +7,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Starts the whole app with in-memory accounts, listings, orders and custom
-/// requests instead of Supabase.
+/// Starts the whole app with in-memory accounts, listings, orders, custom
+/// requests, chats and notifications instead of Supabase and Firebase.
 Future<void> pumpApp(WidgetTester tester,
-    {FakeAuthRepository? auth, FakeCatalogRepository? catalog, FakeListingRepository? listings, FakeOrderRepository? orders, FakeCustomOrderRepository? requests}) async {
+    {FakeAuthRepository? auth,
+    FakeCatalogRepository? catalog,
+    FakeListingRepository? listings,
+    FakeOrderRepository? orders,
+    FakeCustomOrderRepository? requests,
+    FakeChatRepository? chats,
+    FakeNotificationRepository? notices,
+    FakeReceiptScanner? receipts,
+    FakeSavedRepository? saved,
+    FakeRecentSearchRepository? recent}) async {
   AppText.useGoogleFonts = false;
   SharedPreferences.setMockInitialValues({});
   tester.view.physicalSize = const Size(1170, 2532);
@@ -25,6 +34,15 @@ Future<void> pumpApp(WidgetTester tester,
       listingRepositoryProvider.overrideWithValue(listings ?? FakeListingRepository(catalogRepo)),
       orderRepositoryProvider.overrideWithValue(orderRepo),
       customOrderRepositoryProvider.overrideWithValue(requests ?? FakeCustomOrderRepository(orderRepo)),
+      // Chat, online status, notifications and push without Firebase.
+      firebaseSessionProvider.overrideWithValue(FakeFirebaseSession()),
+      chatRepositoryProvider.overrideWithValue(chats ?? FakeChatRepository()),
+      presenceRepositoryProvider.overrideWithValue(FakePresenceRepository()),
+      notificationRepositoryProvider.overrideWithValue(notices ?? FakeNotificationRepository()),
+      pushServiceProvider.overrideWithValue(FakePushService()),
+      receiptScannerProvider.overrideWithValue(receipts ?? FakeReceiptScanner()),
+      savedRepositoryProvider.overrideWithValue(saved ?? FakeSavedRepository()),
+      recentSearchRepositoryProvider.overrideWithValue(recent ?? FakeRecentSearchRepository()),
     ],
     child: const CraftHiveApp(),
   ));

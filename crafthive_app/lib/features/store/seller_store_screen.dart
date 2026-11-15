@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../../shared/widgets/action_helpers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
@@ -43,6 +43,7 @@ class _SellerStoreScreenState extends ConsumerState<SellerStoreScreen> {
                 padding: const EdgeInsets.fromLTRB(Insets.screen, 4, Insets.screen, 0),
                 child: StoreCard(
                   initials: s.initials,
+                  imageUrl: s.avatarUrl,
                   name: s.name,
                   verified: s.isVerified,
                   location: s.location,
@@ -54,12 +55,10 @@ class _SellerStoreScreenState extends ConsumerState<SellerStoreScreen> {
                       label: 'Message',
                       icon: CraftIcons.chat,
                       height: 42,
-                      onPressed: items.isEmpty
+                      // "me" is my own store: nobody to message.
+                      onPressed: s.id == 'me'
                           ? null
-                          : () {
-                              final id = ref.read(chatsProvider.notifier).openForProduct(items.first, s, note: 'from their store page');
-                              context.push('/chat/$id');
-                            },
+                          : () => openChat(context, () => ref.read(chatActionsProvider).openWithStore(s.id, productId: items.firstOrNull?.id)),
                     ),
                     AppButton(
                       label: _following ? 'Following' : 'Follow',

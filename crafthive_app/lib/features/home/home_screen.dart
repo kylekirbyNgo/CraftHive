@@ -90,7 +90,7 @@ class HomeScreen extends ConsumerWidget {
                             radius: 26,
                             child: Padding(
                               padding: const EdgeInsets.all(2),
-                              child: Avatar(initials: user?.initials ?? '?', size: 42, ring: true),
+                              child: Avatar(initials: user?.initials ?? '?', size: 42, ring: true, imageUrl: user?.avatarUrl),
                             ),
                           ),
                         ),

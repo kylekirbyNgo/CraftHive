@@ -60,4 +60,20 @@ abstract final class Validators {
   /// Digits only, with the country code, as stored in users.phone_number (e.g. 639171234567).
   static String storedPhone(String dialCode, String local) =>
       dialCode.replaceAll(RegExp(r'\D'), '') + local.replaceAll(RegExp(r'\D'), '');
+
+  /// Country calling codes offered at Sign up.
+  static const dialCodes = {'Philippines': '+63', 'Singapore': '+65', 'Malaysia': '+60', 'Indonesia': '+62', 'Thailand': '+66', 'Vietnam': '+84', 'Other': '+'};
+
+  /// The saved number without its country code, for editing: 639171234567 → 9171234567.
+  static String localPhone(String country, String storedDigits) {
+    final code = (dialCodes[country] ?? '+').replaceAll(RegExp(r'\D'), '');
+    return code.isNotEmpty && storedDigits.startsWith(code) ? storedDigits.substring(code.length) : storedDigits;
+  }
+
+  /// Store city (STORE.city, required, up to 50 characters).
+  static String? city(String? v) {
+    final t = v?.trim() ?? '';
+    if (t.isEmpty) return 'Enter your city.';
+    return t.length > 50 ? 'City must be 50 characters or fewer.' : null;
+  }
 }

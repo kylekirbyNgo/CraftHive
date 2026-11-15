@@ -1,6 +1,6 @@
 # One-time setup on Windows (PowerShell): creates the Android and web folders, adds the
-# Internet permission (needed to download the Plus Jakarta Sans font), lets password-reset
-# links open the app, and installs packages.
+# Internet and notification permissions, lets password-reset links open the app, and
+# installs packages.
 # Run from the project folder:  powershell -ExecutionPolicy Bypass -File .\setup.ps1
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -9,6 +9,10 @@ $manifest = "android\app\src\main\AndroidManifest.xml"
 $text = Get-Content $manifest -Raw
 if ($text -notmatch "android.permission.INTERNET") {
   $text = $text -replace "<application", "<uses-permission android:name=`"android.permission.INTERNET`"/>`r`n    <application"
+}
+# Push notifications need this permission on Android 13 and newer (Firebase Cloud Messaging)
+if ($text -notmatch "android.permission.POST_NOTIFICATIONS") {
+  $text = $text -replace "<application", "<uses-permission android:name=`"android.permission.POST_NOTIFICATIONS`"/>`r`n    <application"
 }
 $text = $text -replace 'android:label="crafthive"', 'android:label="CraftHive"'
 # Password-reset links from the email open the app (Supabase Auth)

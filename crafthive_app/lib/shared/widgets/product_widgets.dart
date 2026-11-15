@@ -218,7 +218,7 @@ class SellerStrip extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(children: [
-                Avatar(initials: seller.initials, size: 42, color: seller.color, online: seller.isOnline),
+                Avatar(initials: seller.initials, size: 42, color: seller.color, online: seller.isOnline, imageUrl: seller.avatarUrl),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

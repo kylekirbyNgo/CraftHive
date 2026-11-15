@@ -136,6 +136,7 @@ class _MyStoreScreenState extends ConsumerState<MyStoreScreen> {
                 padding: const EdgeInsets.fromLTRB(Insets.screen, 4, Insets.screen, 0),
                 child: StoreCard(
                   initials: user.initials,
+                  imageUrl: user.avatarUrl,
                   name: user.username,
                   verified: user.isVerified,
                   location: user.location.isEmpty ? user.country : user.location,
@@ -212,7 +213,7 @@ class _MyStoreScreenState extends ConsumerState<MyStoreScreen> {
 
 /// Profile card shared by My store and other makers' stores.
 class StoreCard extends StatelessWidget {
-  const StoreCard({super.key, required this.initials, required this.name, required this.verified, required this.location, required this.bio, required this.stats, required this.actions, this.color = AppColors.clay});
+  const StoreCard({super.key, required this.initials, required this.name, required this.verified, required this.location, required this.bio, required this.stats, required this.actions, this.color = AppColors.clay, this.imageUrl});
   final String initials;
   final String name;
   final bool verified;
@@ -222,13 +223,16 @@ class StoreCard extends StatelessWidget {
   final List<Widget> actions;
   final Color color;
 
+  /// Profile photo of the store owner, when there is one.
+  final String? imageUrl;
+
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: AppColors.lightSand, borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.linen)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Row(children: [
-            Avatar(initials: initials, size: 72, color: color),
+            Avatar(initials: initials, size: 72, color: color, imageUrl: imageUrl),
             const SizedBox(width: 14),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

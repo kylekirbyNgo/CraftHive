@@ -1,24 +1,36 @@
+import 'package:cloud_firestore/cloud_firestore.dart' show FirebaseFirestore;
+import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuth;
+import 'package:firebase_database/firebase_database.dart' show FirebaseDatabase;
+import 'package:firebase_messaging/firebase_messaging.dart' show FirebaseMessaging;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show Supabase;
 
+import '../core/config/firebase_config.dart';
 import '../core/theme/app_colors.dart';
-import '../core/utils/format.dart';
 import '../shared/widgets/craft_icon.dart';
-import 'mock_data.dart';
 import 'models.dart';
 import 'repositories/auth_repository.dart';
 import 'repositories/catalog_repository.dart';
+import 'repositories/chat_repository.dart';
 import 'repositories/custom_order_repository.dart';
+import 'repositories/fake_repositories.dart';
+import 'repositories/firebase_session.dart';
 import 'repositories/listing_repository.dart';
+import 'repositories/notification_repository.dart';
 import 'repositories/order_repository.dart';
-import 'sample_ids.dart';
+import 'repositories/presence_repository.dart';
+import 'repositories/receipt_scanner.dart';
+import 'repositories/recent_search_repository.dart';
+import 'repositories/saved_repository.dart';
 
-export 'repositories/auth_repository.dart' show AppFailure, AuthField, SignUpData, SignUpOutcome;
+export 'repositories/auth_repository.dart' show AppFailure, AuthField, ProfileUpdate, SignUpData, SignUpOutcome;
 export 'repositories/catalog_repository.dart' show CatalogData;
 export 'repositories/custom_order_repository.dart' show CustomRequestInput;
 export 'repositories/listing_repository.dart' show ListingInput, ListingPhoto, StoreInput;
 export 'repositories/order_repository.dart' show PickedImage;
+export 'repositories/firebase_session.dart' show PushBanner;
+export 'repositories/receipt_scanner.dart' show ReceiptScan, formatReference;
 
 // ---------------------------------------------------------------------------
 // Session (Supabase Auth). The session is kept on the phone, so the user stays
@@ -67,14 +79,52 @@ class AuthController extends Notifier<AppUser?> {
 
   Future<void> updatePassword(String newPassword) => _repo.updatePassword(newPassword);
 
-  /// Used by Edit profile (store module) to show changes right away.
+  /// Shows profile changes right away (Open your store).
   void updateProfile(AppUser user) => state = user;
 
+  /// Edit profile, all in one step: saves to USERS (and STORE), uploads the new
+  /// photo, starts an email change (a confirmation link is sent to [newEmail]),
+  /// and only then reloads the profile.
+  ///
+  /// Reloading the profile rebuilds this provider, and Riverpod does not allow
+  /// using its ref until that rebuild is done, so nothing may run after it.
+  /// The screen reloads the store cards (catalogDataProvider): that provider
+  /// depends on this one, so invalidating it from here is a CircularDependencyError.
+  Future<void> saveProfile(ProfileUpdate update, {PickedImage? photo, String? newEmail}) async {
+    final repo = _repo;
+    try {
+      await repo.updateProfile(update);
+      if (photo != null) await repo.uploadAvatar(photo.bytes, photo.fileName);
+      if (newEmail != null) await repo.changeEmail(newEmail);
+    } finally {
+      // Also after an error: whatever was saved shows on the screens.
+      await _reloadProfile();
+    }
+  }
+
+  Future<void> _reloadProfile() async {
+    try {
+      await ref.refresh(profileProvider.future);
+    } catch (_) {
+      // Saved already; the profile reloads again on the next screen.
+    }
+  }
+
   Future<void> signOut() async {
+    // While still signed in to Firebase: stop pushes to this phone and show me offline.
+    // This step may never hold up signing out, whatever Firebase does.
+    try {
+      // My Firebase uid is my Supabase user ID. It is not read from firebaseUidProvider,
+      // which depends on this provider (Riverpod would stop with a CircularDependencyError).
+      await disconnectFirebase(ref, _repo.currentUserId).timeout(const Duration(seconds: 6));
+    } catch (e) {
+      debugPrint('Sign out: skipped the Firebase step ($e)');
+    }
     try {
       await _repo.signOut();
-    } on AppFailure {
+    } catch (e) {
       // Offline: Supabase still clears the session on the phone, so the user is signed out.
+      debugPrint('Sign out: $e');
     }
   }
 }
@@ -115,6 +165,7 @@ final sellersProvider = Provider<List<Seller>>((ref) {
         sold: 0,
         replyTime: 'a few hours',
         bio: user.bio,
+        avatarUrl: user.avatarUrl,
       ),
     );
   }
@@ -219,158 +270,237 @@ List<Product> searchProducts(List<Product> all, List<Seller> sellers, SearchFilt
 }
 
 // ---------------------------------------------------------------------------
-// Per-user lists. Recent searches are kept on the phone per account
-// (Firestore users/{uid}/recentSearches in the paper); saved items are still sample data.
+// Per-user lists in Firestore: saved items (users/{uid}/savedItems, with save
+// counts in productStats) and recent searches (users/{uid}/recentSearches).
 // ---------------------------------------------------------------------------
-class SavedController extends Notifier<Set<String>> {
-  @override
-  Set<String> build() => {SampleIds.p2, SampleIds.p5, SampleIds.p9};
+final savedRepositoryProvider = Provider<SavedRepository>(
+    (ref) => FirebaseConfig.ready ? FirestoreSavedRepository(FirebaseFirestore.instance) : FakeSavedRepository());
 
+final savedDataProvider = StreamProvider<Set<String>>((ref) async* {
+  final me = await ref.watch(firebaseUidProvider.future);
+  if (me == null) {
+    yield const <String>{};
+    return;
+  }
+  yield* ref.watch(savedRepositoryProvider).watchSaved(me);
+});
+
+/// Saved product IDs. A tap on the heart shows at once; it is saved in the background.
+class SavedController extends Notifier<Set<String>> {
+  /// Taps not yet confirmed by Firestore: product ID → saved.
+  final _pending = <String, bool>{};
+
+  @override
+  Set<String> build() {
+    final out = {...?ref.watch(savedDataProvider).valueOrNull};
+    _pending.forEach((id, saved) => saved ? out.add(id) : out.remove(id));
+    return out;
+  }
+
+  /// Returns true when the item is now saved.
   bool toggle(String id) {
     final saved = !state.contains(id);
+    _pending[id] = saved;
     state = saved ? {...state, id} : ({...state}..remove(id));
+    _write(id, saved);
     return saved;
+  }
+
+  Future<void> _write(String id, bool saved) async {
+    try {
+      final me = await ref.read(firebaseUidProvider.future);
+      if (me == null) throw const AppFailure('Please log in again.');
+      await ref.read(savedRepositoryProvider).setSaved(me, id, saved);
+      _pending.remove(id);
+    } catch (_) {
+      // Not saved: put the heart back the way it was.
+      _pending.remove(id);
+      ref.invalidateSelf();
+    }
   }
 }
 
 final savedProvider = NotifierProvider<SavedController, Set<String>>(SavedController.new);
 
-class RecentSearchController extends Notifier<List<String>> {
-  static const _max = 10;
-  String _key = '';
+/// How many people saved a product (Firestore productStats/{productId}.saveCount).
+final saveCountProvider = StreamProvider.autoDispose.family<int, String>((ref, productId) => ref.watch(savedRepositoryProvider).watchSaveCount(productId));
 
-  @override
-  List<String> build() {
-    final userId = ref.watch(authProvider.select((u) => u?.id));
-    if (userId == null) return const [];
-    _key = 'recent_searches_$userId';
-    _load(_key);
-    return const [];
+final recentSearchRepositoryProvider = Provider<RecentSearchRepository>(
+    (ref) => FirebaseConfig.ready ? FirestoreRecentSearchRepository(FirebaseFirestore.instance) : FakeRecentSearchRepository());
+
+final recentSearchDataProvider = StreamProvider<List<String>>((ref) async* {
+  final me = await ref.watch(firebaseUidProvider.future);
+  if (me == null) {
+    yield const <String>[];
+    return;
   }
+  yield* ref.watch(recentSearchRepositoryProvider).watch(me);
+});
 
-  Future<void> _load(String key) async {
+/// Recent searches (Firestore users/{uid}/recentSearches), newest first.
+/// Changes show at once and are saved in the background.
+class RecentSearchController extends Notifier<List<String>> {
+  @override
+  List<String> build() => ref.watch(recentSearchDataProvider).valueOrNull ?? const [];
+
+  Future<void> _write(Future<void> Function(RecentSearchRepository repo, String me) change) async {
     try {
-      final saved = (await SharedPreferences.getInstance()).getStringList(key) ?? const [];
-      if (key == _key && state.isEmpty) state = saved;
+      final me = await ref.read(firebaseUidProvider.future);
+      if (me != null) await change(ref.read(recentSearchRepositoryProvider), me);
     } catch (_) {
-      // Storage unavailable: keep the list for this session only.
+      // Recent searches are a convenience: a failed save is not worth an error message.
     }
   }
 
-  Future<void> _save() async {
-    try {
-      await (await SharedPreferences.getInstance()).setStringList(_key, state);
-    } catch (_) {}
-  }
-
-  void add(String q) {
+  void add(String q, {SearchFilters? filters}) {
     final t = q.trim();
-    if (t.isEmpty || _key.isEmpty) return;
-    state = [t, ...state.where((x) => x.toLowerCase() != t.toLowerCase())].take(_max).toList();
-    _save();
+    if (t.isEmpty) return;
+    state = [t, ...state.where((x) => x.toLowerCase() != t.toLowerCase())].take(recentSearchLimit).toList();
+    final f = filters;
+    _write((repo, me) => repo.add(me, t,
+        filters: f == null
+            ? null
+            : {'categoryId': f.categoryId, 'maxPrice': f.maxPrice, 'customOnly': f.customOnly, 'inStockOnly': f.inStockOnly, 'sort': f.sort.name}));
   }
 
   void remove(String q) {
     state = [for (final x in state) if (x != q) x];
-    _save();
+    _write((repo, me) => repo.remove(me, q));
   }
 
   void clear() {
     state = const [];
-    _save();
+    _write((repo, me) => repo.clear(me));
   }
 }
 
 final recentSearchProvider = NotifierProvider<RecentSearchController, List<String>>(RecentSearchController.new);
 
 // ---------------------------------------------------------------------------
-// Messages (Firestore chats/{chatId}/messages)
+// Firebase connection. Login stays with Supabase; the firebase-bridge Edge
+// Function signs the same user in to Firebase. Until FirebaseConfig is filled
+// in (and in the automated tests) the in-memory sample versions are used.
 // ---------------------------------------------------------------------------
-class ChatController extends Notifier<List<ChatThread>> {
-  @override
-  List<ChatThread> build() => [...MockData.threads];
+final firebaseSessionProvider = Provider<FirebaseSession>(
+    (ref) => FirebaseConfig.ready ? FirebaseAuthSession(FirebaseAuth.instance, Supabase.instance.client) : FakeFirebaseSession());
 
-  ChatThread? byId(String id) => state.where((t) => t.id == id).firstOrNull;
+final chatRepositoryProvider = Provider<ChatRepository>(
+    (ref) => FirebaseConfig.ready ? FirestoreChatRepository(FirebaseFirestore.instance, Supabase.instance.client) : FakeChatRepository());
 
-  void send(String threadId, String text) {
-    state = [
-      for (final t in state)
-        if (t.id == threadId)
-          t.copyWith(messages: [...t.messages, ChatMessage(fromMe: true, text: text, time: Fmt.timeNow())], lastTime: Fmt.timeNow())
-        else
-          t,
-    ];
+final presenceRepositoryProvider = Provider<PresenceRepository>(
+    (ref) => FirebaseConfig.ready ? RealtimePresenceRepository(FirebaseDatabase.instance) : FakePresenceRepository());
+
+final notificationRepositoryProvider = Provider<NotificationRepository>(
+    (ref) => FirebaseConfig.ready ? FirestoreNotificationRepository(FirebaseFirestore.instance) : FakeNotificationRepository());
+
+final pushServiceProvider = Provider<PushService>(
+    (ref) => FirebaseConfig.ready ? FcmPushService(FirebaseMessaging.instance, FirebaseFirestore.instance) : FakePushService());
+
+/// My Firebase uid (the same as my Supabase user ID) once connected; null when signed out.
+/// Errors (for example the Edge Function is not deployed) are [AppFailure]s;
+/// ref.invalidate(firebaseUidProvider) tries again.
+final firebaseUidProvider = FutureProvider<String?>((ref) async {
+  final userId = ref.watch(authProvider.select((u) => u?.id));
+  final session = ref.watch(firebaseSessionProvider);
+  if (userId == null) {
+    try {
+      await session.disconnect();
+    } catch (_) {}
+    return null;
   }
+  return firebaseGuard(() => session.connect(userId));
+});
 
-  void markRead(String threadId) {
-    state = [for (final t in state) t.id == threadId ? t.copyWith(unread: 0) : t];
-  }
-
-  void setQuoteStatus(String threadId, QuoteStatus status) {
-    state = [
-      for (final t in state)
-        if (t.id == threadId)
-          t.copyWith(
-            tag: status == QuoteStatus.accepted ? const StatusTag('Custom · Confirmed', Tone.success) : const StatusTag('Custom · Changes asked', Tone.warning),
-            messages: [
-              for (final m in t.messages)
-                if (m.kind == MessageKind.quote) ChatMessage(fromMe: m.fromMe, text: m.text, time: m.time, kind: m.kind, quote: m.quote!.copyWith(status: status)) else m,
-              ChatMessage(
-                fromMe: true,
-                time: Fmt.timeNow(),
-                text: status == QuoteStatus.accepted ? 'I confirmed the order. I\'ll send the payment proof shortly.' : 'Could we change a few details before I confirm?',
-              ),
-            ],
-          )
-        else
-          t,
-    ];
-  }
-
-  /// Seller replies to a custom request with a price quote.
-  void sendQuote(String threadId, Quote quote, String note) {
-    state = [
-      for (final t in state)
-        if (t.id == threadId)
-          t.copyWith(
-            tag: const StatusTag('Custom · Quoted', Tone.info),
-            lastTime: Fmt.timeNow(),
-            messages: [
-              ...t.messages,
-              if (note.trim().isNotEmpty) ChatMessage(fromMe: true, text: note.trim(), time: Fmt.timeNow()),
-              ChatMessage(fromMe: true, text: '', time: Fmt.timeNow(), kind: MessageKind.quote, quote: quote),
-            ],
-          )
-        else
-          t,
-    ];
-  }
-
-  /// "Buy now" opens (or creates) a chat with the seller about this product.
-  String openForProduct(Product p, Seller s, {String? note}) {
-    final existing = state.where((t) => t.side == ChatSide.buying && t.sellerId == s.id).firstOrNull;
-    if (existing != null) {
-      state = [for (final t in state) t.id == existing.id ? ChatThread(
-        id: t.id, side: t.side, name: t.name, initials: t.initials, color: t.color, messages: t.messages, tag: t.tag,
-        sellerId: t.sellerId, productId: p.id, productNote: note ?? 'you tapped Buy now', unread: t.unread, isOnline: t.isOnline, lastTime: t.lastTime) : t];
-      return existing.id;
-    }
-    final id = 't-${s.id}-${p.id}';
-    state = [
-      ChatThread(
-        id: id, side: ChatSide.buying, name: s.name, initials: s.initials, color: s.color, sellerId: s.id, productId: p.id,
-        productNote: note ?? 'you tapped Buy now', isOnline: s.isOnline, lastTime: Fmt.timeNow(), tag: const StatusTag('Buying', Tone.neutral),
-        messages: [ChatMessage(fromMe: false, text: 'You asked about ${p.title} · ${Fmt.peso(p.price)}', time: '', kind: MessageKind.system)],
-      ),
-      ...state,
-    ];
-    return id;
+/// Called before signing out of Supabase, with my user ID (= my Firebase uid).
+Future<void> disconnectFirebase(Ref ref, String? me) async {
+  if (me == null) return;
+  try {
+    await Future.wait([
+      ref.read(pushServiceProvider).unregister(me),
+      ref.read(presenceRepositoryProvider).goOffline(me),
+    ]).timeout(const Duration(seconds: 5));
+  } catch (_) {
+    // Offline: the Realtime Database marks me offline when the connection drops.
   }
 }
 
-final chatsProvider = NotifierProvider<ChatController, List<ChatThread>>(ChatController.new);
+// ---------------------------------------------------------------------------
+// Messages (Firestore chats/{chatId} and chats/{chatId}/messages)
+// ---------------------------------------------------------------------------
+final chatsDataProvider = StreamProvider<List<ChatThread>>((ref) async* {
+  final me = await ref.watch(firebaseUidProvider.future);
+  if (me == null) {
+    yield const [];
+    return;
+  }
+  yield* ref.watch(chatRepositoryProvider).watchThreads(me);
+});
+
+final chatsProvider = Provider<List<ChatThread>>((ref) => ref.watch(chatsDataProvider).valueOrNull ?? const []);
+
+final chatProvider = Provider.family<ChatThread?, String>((ref, id) => ref.watch(chatsProvider).where((t) => t.id == id).firstOrNull);
+
+final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessage>, String>((ref, chatId) async* {
+  final me = await ref.watch(firebaseUidProvider.future);
+  if (me == null) {
+    yield const [];
+    return;
+  }
+  yield* ref.watch(chatRepositoryProvider).watchMessages(chatId, me);
+});
 
 final unreadCountProvider = Provider<int>((ref) => ref.watch(chatsProvider).fold(0, (sum, t) => sum + t.unread));
+
+/// Online status of a user (Realtime Database /status/{uid}).
+final onlineProvider = StreamProvider.autoDispose.family<bool, String>((ref, uid) => ref.watch(presenceRepositoryProvider).watchOnline(uid));
+
+/// Whether [uid] is typing in a chat: key is (chatId, uid).
+final typingProvider = StreamProvider.autoDispose.family<bool, (String, String)>(
+    (ref, key) => ref.watch(presenceRepositoryProvider).watchTyping(key.$1, key.$2));
+
+class ChatActions {
+  ChatActions(this._ref);
+  final Ref _ref;
+
+  ChatRepository get _repo => _ref.read(chatRepositoryProvider);
+
+  Future<String> _me() async {
+    final me = await _ref.read(firebaseUidProvider.future);
+    if (me == null) throw const AppFailure('Please log in again.');
+    return me;
+  }
+
+  /// Message a store as a buyer. Returns the chat ID.
+  Future<String> openWithStore(String storeId, {String? productId}) async =>
+      _repo.open(await _me(), storeId: storeId, productId: productId);
+
+  Future<String> openForOrder(Order o) async =>
+      _repo.open(await _me(), orderId: o.id, productId: o.productId.isEmpty ? null : o.productId);
+
+  Future<String> openForRequest(CustomRequest r) async =>
+      _repo.open(await _me(), requestId: r.id, productId: r.productId.isEmpty ? null : r.productId);
+
+  Future<void> send(ChatThread t, String text) async => _repo.sendText(await _me(), t, text);
+
+  Future<void> sendPhoto(ChatThread t, PickedImage photo) async => _repo.sendPhoto(await _me(), t, photo);
+
+  /// Never fails: a missed read mark only leaves the badge until next time.
+  Future<void> markRead(String chatId) async {
+    try {
+      await _repo.markRead(await _me(), chatId);
+    } catch (_) {}
+  }
+
+  Future<void> setTyping(String chatId, bool typing) async {
+    final me = _ref.read(firebaseUidProvider).valueOrNull;
+    if (me != null) await _ref.read(presenceRepositoryProvider).setTyping(chatId, me, typing);
+  }
+}
+
+final chatActionsProvider = Provider<ChatActions>((ref) => ChatActions(ref));
+
+/// Link to view a chat photo (private chat-photos bucket), valid for an hour.
+final chatPhotoUrlProvider = FutureProvider.family<String, String>((ref, path) => ref.watch(chatRepositoryProvider).photoUrl(path));
 
 // ---------------------------------------------------------------------------
 // Custom requests (PostgreSQL: CUSTOM_REQUEST, CUSTOM_REQUEST_OPTION,
@@ -514,15 +644,44 @@ class OrderActions {
 
 final orderActionsProvider = Provider<OrderActions>((ref) => OrderActions(ref));
 
+/// Reads the reference number and amount from a payment screenshot (scan-receipt Edge Function, OCR.space).
+final receiptScannerProvider = Provider<ReceiptScanner>((ref) => EdgeReceiptScanner(Supabase.instance.client));
+
 // ---------------------------------------------------------------------------
-// Notifications (Firestore users/{uid}/notifications)
+// Notifications (Firestore notifications/{uid}/items, added by the Edge Function)
 // ---------------------------------------------------------------------------
-class NoticeController extends Notifier<List<AppNotice>> {
-  @override
-  List<AppNotice> build() => [...MockData.notices];
-  void markAllRead() => state = [for (final n in state) n.markRead()];
-  void markRead(int i) => state = [for (var k = 0; k < state.length; k++) k == i ? state[k].markRead() : state[k]];
+final noticesDataProvider = StreamProvider<List<AppNotice>>((ref) async* {
+  final me = await ref.watch(firebaseUidProvider.future);
+  if (me == null) {
+    yield const [];
+    return;
+  }
+  yield* ref.watch(notificationRepositoryProvider).watch(me);
+});
+
+final noticesProvider = Provider<List<AppNotice>>((ref) => ref.watch(noticesDataProvider).valueOrNull ?? const []);
+final unreadNoticesProvider = Provider<int>((ref) => ref.watch(noticesProvider).where((n) => !n.read).length);
+
+class NoticeActions {
+  NoticeActions(this._ref);
+  final Ref _ref;
+
+  String? get _me => _ref.read(firebaseUidProvider).valueOrNull;
+
+  Future<void> markRead(AppNotice n) async {
+    final me = _me;
+    if (me == null || n.read) return;
+    try {
+      await _ref.read(notificationRepositoryProvider).markRead(me, n.id);
+    } catch (_) {}
+  }
+
+  Future<void> markAllRead() async {
+    final me = _me;
+    if (me == null) return;
+    final ids = [for (final n in _ref.read(noticesProvider)) if (!n.read) n.id];
+    await _ref.read(notificationRepositoryProvider).markAllRead(me, ids);
+  }
 }
 
-final noticesProvider = NotifierProvider<NoticeController, List<AppNotice>>(NoticeController.new);
-final unreadNoticesProvider = Provider<int>((ref) => ref.watch(noticesProvider).where((n) => !n.read).length);
+final noticeActionsProvider = Provider<NoticeActions>((ref) => NoticeActions(ref));

@@ -36,6 +36,7 @@ class _ProductDetailsScreenState extends ConsumerState<ProductDetailsScreen> {
     final seller = ref.watch(sellerProvider(p.sellerId))!;
     final cat = ref.watch(categoryProvider(p.categoryId));
     final saved = ref.watch(savedProvider).contains(p.id);
+    final saveCount = ref.watch(saveCountProvider(p.id)).valueOrNull ?? 0;
     final isMine = p.sellerId == 'me';
 
     final stockText = p.stock > 0
@@ -127,6 +128,7 @@ class _ProductDetailsScreenState extends ConsumerState<ProductDetailsScreen> {
                         const CraftIcon(CraftIcons.star, size: 15, color: AppColors.softHoney),
                         Text(p.rating.toStringAsFixed(1), style: AppText.label.copyWith(fontWeight: FontWeight.w800)),
                         Text('· ${p.sold} sold ·', style: AppText.caption.copyWith(fontSize: 13)),
+                        if (saveCount > 0) Text('${Fmt.count(saveCount, 'save')} ·', style: AppText.caption.copyWith(fontSize: 13)),
                         Text(stockText, style: AppText.label.copyWith(color: stockColor, fontWeight: FontWeight.w700)),
                       ]),
                     ),

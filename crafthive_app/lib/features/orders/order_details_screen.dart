@@ -134,10 +134,13 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
                 const SizedBox(height: 10),
                 AppButton(label: 'View request ${o.requestCode}', kind: ButtonKind.outline, onPressed: () => context.push('/request/${o.requestCode}')),
               ],
-              if (o.chatId != null) ...[
-                const SizedBox(height: 10),
-                AppButton(label: 'Open chat', icon: CraftIcons.chat, kind: ButtonKind.outline, onPressed: () => context.push('/chat/${o.chatId}')),
-              ],
+              const SizedBox(height: 10),
+              AppButton(
+                label: 'Open chat',
+                icon: CraftIcons.chat,
+                kind: ButtonKind.outline,
+                onPressed: () => o.chatId != null ? context.push('/chat/${o.chatId}') : openChat(context, () => ref.read(chatActionsProvider).openForOrder(o)),
+              ),
             ]),
           ),
         ),
@@ -264,7 +267,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
     final result = await showModalBottomSheet<(String, PickedImage)>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _ProofSheet(total: o.total),
+      builder: (_) => _ProofSheet(
+        total: o.total,
+        scan: (photo) => ref.read(receiptScannerProvider).scan(orderId: o.id, image: photo),
+      ),
     );
     if (result == null) return;
     await _run(() => _actions.submitPayment(o, reference: result.$1, proof: result.$2), success: 'Payment proof sent to ${o.counterpart}.');
@@ -278,9 +284,14 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
 }
 
 /// Buyer's payment proof: the receipt screenshot and its reference number.
+/// When a screenshot is added it is scanned (OCR): the reference number is filled
+/// in and checked against earlier payments, and the amount against the order total.
+/// A receipt for a different amount cannot be sent. The buyer can always
+/// correct the reference number by hand.
 class _ProofSheet extends StatefulWidget {
-  const _ProofSheet({required this.total});
+  const _ProofSheet({required this.total, required this.scan});
   final double total;
+  final Future<ReceiptScan> Function(PickedImage photo) scan;
   @override
   State<_ProofSheet> createState() => _ProofSheetState();
 }
@@ -291,77 +302,195 @@ class _ProofSheetState extends State<_ProofSheet> {
   String? _refError;
   bool _photoError = false;
 
+  bool _scanning = false;
+  ReceiptScan? _scan;
+  String? _scanError;
+
+  /// The typed number differs from the receipt; the next tap on Send sends anyway.
+  bool _mismatchShown = false;
+
+  /// The receipt shows another amount than the order total: it cannot be sent.
+  bool get _wrongAmount => _scan?.amount != null && _scan?.amountMatches == false;
+
+  /// This screenshot or its amount rules it out; the buyer must pick another one.
+  bool get _blocked => (_scan?.screenshotUsed ?? false) || _wrongAmount;
+
   @override
   void dispose() {
     _ref.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(Insets.screen, 0, Insets.screen, 16),
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Text('Upload payment proof', style: AppText.screenTitle),
-              const SizedBox(height: 4),
-              Text('Amount to pay: ${Fmt.peso(widget.total)}', style: AppText.caption.copyWith(fontSize: 13)),
-              const SizedBox(height: 14),
-              if (_photo != null)
-                Stack(children: [
-                  ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(_photo!.bytes, height: 160, width: double.infinity, fit: BoxFit.cover)),
-                  Positioned(
-                    top: 6,
-                    right: 6,
-                    child: RoundIconButton(icon: CraftIcons.close, tooltip: 'Remove screenshot', background: AppColors.white, onPressed: () => setState(() => _photo = null)),
-                  ),
-                ])
-              else
-                DashedAddBox(
-                  label: 'Add the GCash or bank screenshot',
-                  onTap: () async {
-                    final photo = await pickOnePhoto(context);
-                    if (photo != null && mounted) {
-                      setState(() {
-                        _photo = photo;
-                        _photoError = false;
-                      });
-                    }
-                  },
-                ),
-              if (_photoError)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6, left: 4),
-                  child: Text('Add the receipt screenshot.', style: AppText.caption.copyWith(color: AppColors.brick)),
-                ),
-              const SizedBox(height: 12),
-              Text('Reference number', style: AppText.label),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _ref,
-                keyboardType: TextInputType.text,
-                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9 -]'))],
-                decoration: InputDecoration(hintText: '5012 345 678901', errorText: _refError),
-              ),
-              const SizedBox(height: 16),
-              AppButton(
-                label: 'Send proof',
-                icon: CraftIcons.send,
-                onPressed: () {
-                  final ref = _ref.text.replaceAll(' ', '');
-                  setState(() {
-                    _refError = ref.length < 6 ? 'Enter the reference number from your receipt.' : null;
-                    _photoError = _photo == null;
-                  });
-                  if (_refError != null || _photoError) return;
-                  Navigator.pop(context, (ref, _photo!));
-                },
-              ),
-            ]),
-          ),
+  static String _plain(String s) => s.replaceAll(RegExp(r'\s'), '').toUpperCase();
+
+  Future<void> _pick() async {
+    final photo = await pickOnePhoto(context);
+    if (photo == null || !mounted) return;
+    setState(() {
+      _photo = photo;
+      _photoError = false;
+      _scan = null;
+      _scanError = null;
+      _mismatchShown = false;
+      _scanning = true;
+    });
+    try {
+      final result = await widget.scan(photo);
+      if (!mounted || _photo != photo) return;
+      setState(() {
+        _scan = result;
+        final found = result.reference;
+        if (found != null && _ref.text.trim().isEmpty) _ref.text = formatReference(found);
+      });
+    } on AppFailure catch (e) {
+      if (mounted && _photo == photo) setState(() => _scanError = e.message);
+    } finally {
+      if (mounted && _photo == photo) setState(() => _scanning = false);
+    }
+  }
+
+  void _send() {
+    final ref = _plain(_ref.text);
+    final scan = _scan;
+    setState(() {
+      _refError = ref.length < 6 ? 'Enter the reference number from your receipt.' : null;
+      _photoError = _photo == null;
+    });
+    if (_refError != null || _photoError || _scanning) return;
+    if (_blocked) return;
+    if (scan != null && scan.referenceUsed && ref == scan.reference) {
+      setState(() => _refError = 'This reference number was already used for another payment.');
+      return;
+    }
+    // The number typed is not the one on the receipt: warn once, then allow (OCR can misread).
+    final found = scan?.reference;
+    if (found != null && ref != found && !_mismatchShown) {
+      setState(() {
+        _mismatchShown = true;
+        _refError = "This doesn't match the receipt (${formatReference(found)}). Check it, then tap Send proof again.";
+      });
+      return;
+    }
+    Navigator.pop(context, (ref, _photo!));
+  }
+
+  List<Widget> _scanNotes() {
+    if (_scanning) {
+      return [
+        Row(children: [
+          const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.moss)),
+          const SizedBox(width: 10),
+          Text('Reading your receipt…', style: AppText.caption.copyWith(fontSize: 13)),
+        ]),
+      ];
+    }
+    final error = _scanError;
+    if (error != null) return [InfoNote(error, tone: Tone.warning)];
+    final scan = _scan;
+    if (scan == null) return const [];
+    final found = scan.reference;
+    final amount = scan.amount;
+    return [
+      if (scan.screenshotUsed)
+        const InfoNote('This screenshot was already uploaded for another payment. Upload the receipt for this payment.', icon: CraftIcons.close, tone: Tone.error)
+      else if (found == null)
+        const InfoNote("We couldn't find the reference number on this screenshot. Type it from your receipt.", tone: Tone.warning)
+      else if (scan.referenceUsed)
+        InfoNote('Reference ${formatReference(found)} was already used for another payment.', icon: CraftIcons.close, tone: Tone.error)
+      else
+        InfoNote('Reference ${formatReference(found)} read from your receipt. Check that it matches.', icon: CraftIcons.check, tone: Tone.success),
+      if (amount != null && scan.amountMatches == false) ...[
+        const SizedBox(height: 8),
+        InfoNote(
+          'Wrong amount: the receipt shows ${Fmt.peso(amount)}, but you need to pay ${Fmt.peso(widget.total)}. '
+          'Send the full amount, then upload that receipt.',
+          icon: CraftIcons.close,
+          tone: Tone.error,
         ),
-      );
+      ] else if (amount != null && scan.amountMatches == true) ...[
+        const SizedBox(height: 8),
+        InfoNote('Amount ${Fmt.peso(amount)} matches the order.', icon: CraftIcons.check, tone: Tone.success),
+      ] else if (amount == null) ...[
+        const SizedBox(height: 8),
+        InfoNote("We couldn't read the amount on this screenshot. The seller will check that you paid ${Fmt.peso(widget.total)}.", tone: Tone.warning),
+      ],
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final notes = _scanNotes();
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(Insets.screen, 0, Insets.screen, 16),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('Upload payment proof', style: AppText.screenTitle),
+            const SizedBox(height: 4),
+            Text('Amount to pay: ${Fmt.peso(widget.total)}', style: AppText.caption.copyWith(fontSize: 13)),
+            const SizedBox(height: 14),
+            if (_photo != null)
+              Stack(children: [
+                ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(_photo!.bytes, height: 160, width: double.infinity, fit: BoxFit.cover)),
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: RoundIconButton(
+                    icon: CraftIcons.close,
+                    tooltip: 'Remove screenshot',
+                    background: AppColors.white,
+                    onPressed: () => setState(() {
+                      _photo = null;
+                      _scan = null;
+                      _scanError = null;
+                      _scanning = false;
+                      _mismatchShown = false;
+                    }),
+                  ),
+                ),
+              ])
+            else
+              DashedAddBox(label: 'Add the GCash or bank screenshot', onTap: _pick),
+            if (_photoError)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 4),
+                child: Text('Add the receipt screenshot.', style: AppText.caption.copyWith(color: AppColors.brick)),
+              ),
+            if (notes.isNotEmpty) ...[const SizedBox(height: 10), ...notes],
+            const SizedBox(height: 12),
+            Text('Reference number', style: AppText.label),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ref,
+              keyboardType: TextInputType.text,
+              textCapitalization: TextCapitalization.characters,
+              inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9 -]'))],
+              onChanged: (_) {
+                if (_refError != null || _mismatchShown) {
+                  setState(() {
+                    _refError = null;
+                    _mismatchShown = false;
+                  });
+                }
+              },
+              decoration: InputDecoration(hintText: '5012 345 678901', errorText: _refError, errorMaxLines: 3),
+            ),
+            const SizedBox(height: 16),
+            AppButton(
+              label: _scanning
+                  ? 'Reading receipt…'
+                  : _wrongAmount
+                      ? 'Wrong amount – choose another receipt'
+                      : 'Send proof',
+              icon: CraftIcons.send,
+              onPressed: _scanning || _blocked ? null : _send,
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
 class _ReviewSheet extends StatefulWidget {

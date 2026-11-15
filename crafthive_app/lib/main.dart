@@ -1,13 +1,16 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'core/config/firebase_config.dart';
 import 'core/config/supabase_config.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
+import 'shared/widgets/realtime_scope.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,6 +24,16 @@ Future<void> main() async {
   } catch (e) {
     runApp(_SetupMessage('Could not start the connection to Supabase: $e'));
     return;
+  }
+  // Firebase: chat, online status, notifications and push. Without it the app
+  // still runs, with sample chats (see lib/core/config/firebase_config.dart).
+  if (FirebaseConfig.isSet) {
+    try {
+      await Firebase.initializeApp(options: FirebaseConfig.options);
+      FirebaseConfig.ready = true;
+    } catch (e) {
+      debugPrint('Firebase did not start: $e');
+    }
   }
   // Plus Jakarta Sans is downloaded once by google_fonts and cached on the phone.
   GoogleFonts.config.allowRuntimeFetching = true;
@@ -44,12 +57,13 @@ class CraftHiveApp extends ConsumerWidget {
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
       routerConfig: router,
+      scaffoldMessengerKey: appMessengerKey,
       builder: (context, child) {
         // Respect the user's text size, but cap it so layouts stay intact.
         final mq = MediaQuery.of(context);
         return MediaQuery(
           data: mq.copyWith(textScaler: mq.textScaler.clamp(minScaleFactor: 0.9, maxScaleFactor: 1.3)),
-          child: child!,
+          child: RealtimeScope(child: child!),
         );
       },
     );

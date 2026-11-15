@@ -168,6 +168,13 @@ class _RequestDetailsScreenState extends ConsumerState<RequestDetailsScreen> {
               ]),
               const SizedBox(height: 18),
               ..._actionsFor(r, p, open),
+              const SizedBox(height: 10),
+              AppButton(
+                label: selling ? 'Message the buyer' : 'Message the maker',
+                icon: CraftIcons.chat,
+                kind: ButtonKind.outline,
+                onPressed: () => openChat(context, () => ref.read(chatActionsProvider).openForRequest(r)),
+              ),
             ]),
           ),
         ),

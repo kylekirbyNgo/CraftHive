@@ -6,11 +6,14 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../../shared/widgets/action_helpers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 
-/// Supporting screen – Notifications: quotes, payments, requests, shipping and reviews.
-/// Each one opens the related chat, order or store (deep links in Milestone 3).
+/// Supporting screen – Notifications (Firestore notifications/{uid}/items): quotes,
+/// payments, requests, order updates, shipping and reviews. They are added by the
+/// server when PostgreSQL saves the change, together with a push notification.
+/// Each one opens the related order, custom request or chat.
 class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
 
@@ -20,19 +23,26 @@ class NotificationsScreen extends ConsumerWidget {
         NoticeKind.request => (CraftIcons.edit, Tone.seller),
         NoticeKind.shipping => (CraftIcons.truck, Tone.info),
         NoticeKind.review => (CraftIcons.star, Tone.warning),
+        NoticeKind.order => (CraftIcons.orders, Tone.info),
       };
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notices = ref.watch(noticesProvider);
+    final loading = notices.isEmpty && ref.watch(noticesDataProvider).isLoading;
     final unread = notices.where((n) => !n.read).length;
     return Scaffold(
       appBar: ScreenHeader(
         title: 'Notifications',
-        trailing: unread == 0 ? null : TextButton(onPressed: () => ref.read(noticesProvider.notifier).markAllRead(), child: const Text('Mark all read')),
+        trailing: unread == 0 ? null : TextButton(
+                onPressed: () => runWithMessage(context, () => ref.read(noticeActionsProvider).markAllRead()),
+                child: const Text('Mark all read'),
+              ),
       ),
       body: ResponsiveCenter(
-        child: notices.isEmpty
+        child: loading
+            ? const Center(child: CircularProgressIndicator(color: AppColors.moss))
+            : notices.isEmpty
             ? const EmptyState(icon: CraftIcons.bell, title: 'You are all caught up', message: 'Quotes, payments and order updates will show up here.')
             : ListView.separated(
                 padding: const EdgeInsets.only(bottom: 24),
@@ -48,7 +58,7 @@ class NotificationsScreen extends ConsumerWidget {
                     excludeSemantics: true,
                     child: InkWell(
                       onTap: () {
-                        ref.read(noticesProvider.notifier).markRead(i);
+                        ref.read(noticeActionsProvider).markRead(n);
                         context.push(n.route);
                       },
                       child: Container(

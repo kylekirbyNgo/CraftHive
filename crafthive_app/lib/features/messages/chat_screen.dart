@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -7,12 +9,15 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/format.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../../shared/widgets/action_helpers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
 
-/// Screen 8 – Chat: seller name and online status, the product being discussed,
-/// message bubbles, quote cards with Confirm order / Ask for changes, photo attach and send.
+/// Screen 8 – Chat (Firestore chats/{chatId}/messages): the other person's name,
+/// online status and typing (Realtime Database), the product being discussed,
+/// message bubbles with "Seen", and quote cards with Confirm order / Ask for changes.
+/// Quote cards and order updates are posted by the server after PostgreSQL saves them.
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key, required this.threadId});
   final String threadId;
@@ -23,18 +28,28 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  Timer? _typingOff;
+  Timer? _waitForChat;
+  bool _gaveUp = false;
+  bool _typing = false;
+  bool _sending = false;
+  bool _sendingPhoto = false;
+  late final ChatActions _chat = ref.read(chatActionsProvider);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(chatsProvider.notifier).markRead(widget.threadId);
+      _chat.markRead(widget.threadId);
       _toBottom(jump: true);
     });
   }
 
   @override
   void dispose() {
+    _typingOff?.cancel();
+    _waitForChat?.cancel();
+    if (_typing) _chat.setTyping(widget.threadId, false);
     _input.dispose();
     _scroll.dispose();
     super.dispose();
@@ -46,50 +61,110 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     jump ? _scroll.jumpTo(target) : _scroll.animateTo(target, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
   }
 
-  void _send() {
-    final text = _input.text.trim();
-    if (text.isEmpty) return;
-    ref.read(chatsProvider.notifier).send(widget.threadId, text);
-    _input.clear();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
-  }
-
-  void _onQuote(QuoteStatus status) {
-    ref.read(chatsProvider.notifier).setQuoteStatus(widget.threadId, status);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
-    if (status == QuoteStatus.accepted) {
-      final order = ref.read(ordersProvider).where((o) => o.chatId == widget.threadId).firstOrNull;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          content: const Text('Order confirmed. Upload your payment proof to get started.'),
-          action: order == null ? null : SnackBarAction(label: 'View order', textColor: AppColors.softHoney, onPressed: () => context.push('/order/${order.number}')),
-        ));
+  /// Typing dots for the other person: on while typing, off after 3 quiet seconds.
+  void _onChanged(String text) {
+    setState(() {});
+    _typingOff?.cancel();
+    if (text.trim().isEmpty) {
+      _setTyping(false);
+      return;
     }
+    _setTyping(true);
+    _typingOff = Timer(const Duration(seconds: 3), () => _setTyping(false));
   }
 
-  Future<void> _composeQuote(ChatThread t, Product? p) async {
-    final result = await showModalBottomSheet<(Quote, String)>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _QuoteSheet(defaultItem: p?.title ?? 'Custom item', basePrice: p?.price ?? 0),
-    );
-    if (result == null) return;
-    ref.read(chatsProvider.notifier).sendQuote(t.id, result.$1, result.$2);
+  void _setTyping(bool on) {
+    if (_typing == on) return;
+    _typing = on;
+    _chat.setTyping(widget.threadId, on);
+  }
+
+  Future<void> _send(ChatThread t) async {
+    final text = _input.text.trim();
+    if (text.isEmpty || _sending) return;
+    _typingOff?.cancel();
+    _setTyping(false);
+    setState(() => _sending = true);
+    _input.clear();
+    final ok = await runWithMessage(context, () => _chat.send(t, text));
+    if (!mounted) return;
+    // Keep what they typed if it could not be sent.
+    if (!ok && _input.text.isEmpty) _input.text = text;
+    setState(() => _sending = false);
     WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
+  }
+
+  Future<void> _sendPhoto(ChatThread t) async {
+    final photo = await pickOnePhoto(context);
+    if (photo == null || !mounted) return;
+    setState(() => _sendingPhoto = true);
+    await runWithMessage(context, () => _chat.sendPhoto(t, photo));
+    if (!mounted) return;
+    setState(() => _sendingPhoto = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
+  }
+
+  Future<void> _acceptQuote(QuoteOffer q) async {
+    final yes = await confirmAction(
+      context,
+      title: 'Confirm this order?',
+      message: 'You agree to pay ${Fmt.peso(q.price)}, ready by ${Fmt.date(q.readyBy)}. The maker starts once your payment is confirmed.',
+      confirmLabel: 'Confirm order',
+    );
+    if (!yes || !mounted) return;
+    String? number;
+    final ok = await runWithMessage(context, () async => number = await ref.read(customOrderActionsProvider).accept(q));
+    if (!ok || !mounted || number == null) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: const Text('Order confirmed. Upload your payment proof to get started.'),
+        action: SnackBarAction(label: 'View order', textColor: AppColors.softHoney, onPressed: () => context.push('/order/$number')),
+      ));
   }
 
   @override
   Widget build(BuildContext context) {
-    final t = ref.watch(chatsProvider).where((x) => x.id == widget.threadId).firstOrNull;
+    final t = ref.watch(chatProvider(widget.threadId));
     if (t == null) {
-      return Scaffold(appBar: const ScreenHeader(title: 'Chat', fallback: '/messages'), body: EmptyState(icon: CraftIcons.chat, title: 'Chat not found', message: 'This conversation is no longer available.', actionLabel: 'Back to messages', onAction: () => context.go('/messages')));
+      // A chat that was just created can take a moment to reach the list.
+      _waitForChat ??= Timer(const Duration(seconds: 6), () {
+        if (mounted) setState(() => _gaveUp = true);
+      });
+      final loading = !_gaveUp || ref.watch(chatsDataProvider).isLoading || ref.watch(firebaseUidProvider).isLoading;
+      return Scaffold(
+        appBar: const ScreenHeader(title: 'Chat', fallback: '/messages'),
+        body: loading
+            ? const Center(child: CircularProgressIndicator(color: AppColors.moss))
+            : EmptyState(
+                icon: CraftIcons.chat,
+                title: 'Chat not found',
+                message: 'This conversation is no longer available.',
+                actionLabel: 'Back to messages',
+                onAction: () => context.go('/messages'),
+              ),
+      );
     }
+    final messages = ref.watch(chatMessagesProvider(t.id)).valueOrNull ?? t.messages;
     final p = t.productId == null ? null : ref.watch(productProvider(t.productId!));
     final isBuying = t.side == ChatSide.buying;
-    final needsQuote = !isBuying && t.tag.tone == Tone.warning;
+    final online = t.isOnline || (ref.watch(onlineProvider(t.otherUid)).valueOrNull ?? false);
+    final typing = ref.watch(typingProvider((t.id, t.otherUid))).valueOrNull ?? false;
+    final request = t.requestCode == null ? null : ref.watch(requestProvider(t.requestCode!));
+    // A new request or changes asked: the seller answers on the request screen.
+    final replyCode = (!isBuying && request != null && request.needsMyAction) ? request.code : null;
 
-    ref.listen(chatsProvider, (_, __) => WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom()));
+    // New messages: scroll down, and mark them read while the chat is open.
+    ref.listen(chatMessagesProvider(t.id), (_, __) => WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom()));
+    ref.listen(chatProvider(widget.threadId), (_, next) {
+      if ((next?.unread ?? 0) > 0) _chat.markRead(widget.threadId);
+    });
+
+    final status = typing
+        ? 'typing…'
+        : online
+            ? 'Online${isBuying ? ' · usually replies in ${ref.watch(sellerProvider(t.sellerId ?? ''))?.replyTime.replaceFirst('about ', '') ?? 'a few hours'}' : ''}'
+            : (isBuying ? 'Maker' : 'Customer of your store');
 
     return Scaffold(
       backgroundColor: AppColors.warmCream,
@@ -103,21 +178,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             child: Row(children: [
               const BackRoundButton(fallback: '/messages'),
               const SizedBox(width: 6),
-              Avatar(initials: t.initials, size: 40, color: t.color, online: t.isOnline),
+              Avatar(initials: t.initials, size: 40, color: t.color, online: online, imageUrl: isBuying ? ref.watch(sellerProvider(t.sellerId ?? ''))?.avatarUrl : null),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(t.name, style: AppText.bodyStrong.copyWith(fontSize: 15), maxLines: 1, overflow: TextOverflow.ellipsis),
                   Text(
-                    t.isOnline ? 'Online${isBuying ? ' · usually replies in ${ref.watch(sellerProvider(t.sellerId ?? ''))?.replyTime.replaceFirst('about ', '') ?? 'a few hours'}' : ''}' : (isBuying ? 'Maker' : 'Customer of your store'),
-                    style: AppText.caption.copyWith(color: t.isOnline ? AppColors.fern : AppColors.grayBrown, fontWeight: FontWeight.w600),
+                    status,
+                    style: AppText.caption.copyWith(color: online || typing ? AppColors.fern : AppColors.grayBrown, fontWeight: FontWeight.w600),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ]),
               ),
-              if (isBuying && t.sellerId != null)
+              if (t.orderNumber != null)
+                RoundIconButton(icon: CraftIcons.orders, tooltip: 'Order ${t.orderNumber}', onPressed: () => context.push('/order/${t.orderNumber}')),
+              if (isBuying && t.sellerId != null) ...[
+                const SizedBox(width: 6),
                 RoundIconButton(icon: CraftIcons.store, tooltip: 'View store', onPressed: () => context.push('/seller/${t.sellerId}')),
+              ],
             ]),
           ),
         ),
@@ -141,41 +220,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         Expanded(
           child: ResponsiveCenter(
             maxWidth: 720,
-            child: ListView.builder(
-              controller: _scroll,
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-              itemCount: t.messages.length,
-              itemBuilder: (_, i) {
-                final m = t.messages[i];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: switch (m.kind) {
-                    MessageKind.system => _SystemNote(m.text),
-                    MessageKind.quote => _QuoteCard(quote: m.quote!, fromMe: m.fromMe, canAct: isBuying && !m.fromMe, onAction: _onQuote, time: m.time),
-                    _ => _Bubble(message: m),
-                  },
-                );
-              },
-            ),
+            child: messages.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(isBuying ? 'Say hello and ask the maker anything about their items.' : 'Say hello to your customer.',
+                          style: AppText.caption, textAlign: TextAlign.center),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scroll,
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                    itemCount: messages.length,
+                    itemBuilder: (_, i) {
+                      final m = messages[i];
+                      final readAt = t.otherReadAt;
+                      final seen = m.seen || (m.fromMe && readAt != null && m.sentAt != null && !m.sentAt!.isAfter(readAt));
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: switch (m.kind) {
+                          MessageKind.system => _SystemNote(m.text),
+                          MessageKind.photo => _PhotoBubble(message: m, seen: seen),
+                          MessageKind.quote => _QuoteCard(
+                              message: m,
+                              isBuying: isBuying,
+                              onAccept: _acceptQuote,
+                              onAskChanges: (code) => context.push('/request/$code'),
+                            ),
+                          _ => _Bubble(message: m, seen: seen),
+                        },
+                      );
+                    },
+                  ),
           ),
         ),
-        if (needsQuote)
+        if (replyCode != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: ResponsiveCenter(
               maxWidth: 720,
-              child: Row(children: [
-                Expanded(child: AppButton(label: 'Send a quote', icon: CraftIcons.tag, height: 44, onPressed: () => _composeQuote(t, p))),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: AppButton(
-                    label: 'Decline',
-                    kind: ButtonKind.danger,
-                    height: 44,
-                    onPressed: () => showMessage(context, 'Declining asks for a reason first. This form arrives in Milestone 3.'),
-                  ),
-                ),
-              ]),
+              child: AppButton(
+                label: 'Quote or decline $replyCode',
+                icon: CraftIcons.tag,
+                height: 44,
+                onPressed: () => context.push('/request/$replyCode'),
+              ),
             ),
           ),
         // Input bar
@@ -185,20 +274,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           child: ResponsiveCenter(
             maxWidth: 720,
             child: Row(children: [
-              RoundIconButton(icon: CraftIcons.clip, tooltip: 'Attach a photo', size: 42, onPressed: () => showComingSoon(context, 'Photo sharing')),
+              _sendingPhoto
+                  ? const SizedBox(width: 42, height: 42, child: Padding(padding: EdgeInsets.all(11), child: CircularProgressIndicator(strokeWidth: 2.4, color: AppColors.moss)))
+                  : RoundIconButton(icon: CraftIcons.image, tooltip: 'Send a photo', size: 42, onPressed: () => _sendPhoto(t)),
               const SizedBox(width: 4),
               Expanded(
                 child: TextField(
                   controller: _input,
                   minLines: 1,
                   maxLines: 4,
+                  maxLength: 2000,
                   textCapitalization: TextCapitalization.sentences,
                   textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _send(),
-                  onChanged: (_) => setState(() {}),
+                  onSubmitted: (_) => _send(t),
+                  onChanged: _onChanged,
                   style: AppText.body,
                   decoration: InputDecoration(
                     hintText: 'Type a message',
+                    counterText: '',
                     filled: true,
                     fillColor: AppColors.warmCream,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
@@ -214,11 +307,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 label: 'Send message',
                 excludeSemantics: true,
                 child: Material(
-                  color: _input.text.trim().isEmpty ? AppColors.linen : AppColors.moss,
+                  color: _input.text.trim().isEmpty || _sending ? AppColors.linen : AppColors.moss,
                   shape: const CircleBorder(),
                   child: InkWell(
                     customBorder: const CircleBorder(),
-                    onTap: _send,
+                    onTap: () => _send(t),
                     child: const SizedBox(width: 44, height: 44, child: Center(child: CraftIcon(CraftIcons.send, size: 19, color: AppColors.white))),
                   ),
                 ),
@@ -245,8 +338,9 @@ class _SystemNote extends StatelessWidget {
 }
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message});
+  const _Bubble({required this.message, required this.seen});
   final ChatMessage message;
+  final bool seen;
   @override
   Widget build(BuildContext context) {
     final me = message.fromMe;
@@ -271,7 +365,7 @@ class _Bubble extends StatelessWidget {
           ),
           if (message.time.isNotEmpty) ...[
             const SizedBox(height: 3),
-            Text('${message.time}${me && message.seen ? ' · Seen' : ''}', style: AppText.caption.copyWith(fontSize: 10.5)),
+            Text('${message.time}${me && seen ? ' · Seen' : ''}', style: AppText.caption.copyWith(fontSize: 10.5)),
           ],
         ]),
       ),
@@ -279,27 +373,41 @@ class _Bubble extends StatelessWidget {
   }
 }
 
-class _QuoteCard extends StatelessWidget {
-  const _QuoteCard({required this.quote, required this.fromMe, required this.canAct, required this.onAction, required this.time});
-  final Quote quote;
-  final bool fromMe;
-  final bool canAct;
-  final ValueChanged<QuoteStatus> onAction;
-  final String time;
+
+/// A seller's price offer, posted into the chat by the server when the quote is
+/// saved. Its current state comes from the custom request in PostgreSQL.
+class _QuoteCard extends ConsumerWidget {
+  const _QuoteCard({required this.message, required this.isBuying, required this.onAccept, required this.onAskChanges});
+  final ChatMessage message;
+  final bool isBuying;
+  final ValueChanged<QuoteOffer> onAccept;
+  final ValueChanged<String> onAskChanges;
 
   @override
-  Widget build(BuildContext context) {
-    final (headText, headColor, headTint) = switch (quote.status) {
-      QuoteStatus.sent => (fromMe ? 'Quote sent' : 'Request accepted · quote', AppColors.fern, AppColors.fernTint),
-      QuoteStatus.accepted => ('Quote confirmed · order created', AppColors.fern, AppColors.fernTint),
-      QuoteStatus.changesRequested => ('Changes requested', AppColors.amberText, AppColors.amberTint),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final quote = message.quote!;
+    final code = message.requestCode;
+    final request = code == null ? null : ref.watch(requestProvider(code));
+    final offer = request?.quotes.where((q) => q.id == message.quoteId).firstOrNull;
+    final canAct = isBuying && offer != null && request?.openQuote?.id == offer.id;
+    final fromSeller = !isBuying;
+
+    final (headText, headColor, headTint) = switch (offer?.status ?? OfferStatus.sent) {
+      OfferStatus.sent => (fromSeller ? 'Quote sent · waiting for buyer' : 'Quote from the maker', AppColors.fern, AppColors.fernTint),
+      OfferStatus.accepted => ('Quote confirmed · order created', AppColors.fern, AppColors.fernTint),
+      OfferStatus.changesRequested => ('Changes requested', AppColors.amberText, AppColors.amberTint),
+      OfferStatus.declined => ('Declined', AppColors.brick, AppColors.brickTint),
+      OfferStatus.superseded => ('Replaced by a newer quote', AppColors.grayBrown, AppColors.lightSand),
     };
     Widget line(String a, String b) => Padding(
           padding: const EdgeInsets.only(bottom: 6),
-          child: Row(children: [Expanded(child: Text(a, style: AppText.body.copyWith(fontSize: 13, color: AppColors.grayBrown))), Text(b, style: AppText.bodyStrong.copyWith(fontSize: 13))]),
+          child: Row(children: [
+            Expanded(child: Text(a, style: AppText.body.copyWith(fontSize: 13, color: AppColors.grayBrown))),
+            Text(b, style: AppText.bodyStrong.copyWith(fontSize: 13)),
+          ]),
         );
     return Align(
-      alignment: fromMe ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: fromSeller ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: (MediaQuery.sizeOf(context).width * 0.82).clamp(0.0, 420.0)),
         child: Container(
@@ -310,9 +418,10 @@ class _QuoteCard extends StatelessWidget {
               color: headTint,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(children: [
-                CraftIcon(CraftIcons.check, size: 15, color: headColor, strokeWidth: 2.6),
+                CraftIcon(CraftIcons.tag, size: 15, color: headColor, strokeWidth: 2.4),
                 const SizedBox(width: 6),
                 Expanded(child: Text(headText, style: AppText.label.copyWith(fontSize: 12.5, fontWeight: FontWeight.w800, color: headColor))),
+                if (offer != null) Text('v${offer.version}', style: AppText.small.copyWith(color: headColor, fontWeight: FontWeight.w700)),
               ]),
             ),
             Padding(
@@ -320,15 +429,27 @@ class _QuoteCard extends StatelessWidget {
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 line(quote.item, Fmt.peso(quote.price)),
                 line('Ready by', Fmt.date(quote.readyBy)),
-                if (canAct && quote.status == QuoteStatus.sent) ...[
+                if (code != null) line('Request', code),
+                if (message.text.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text('"${message.text}"', style: AppText.body.copyWith(fontSize: 13, fontStyle: FontStyle.italic)),
+                  const SizedBox(height: 6),
+                ],
+                if (canAct) ...[
                   const SizedBox(height: 4),
                   Row(children: [
-                    Expanded(child: AppButton(label: 'Confirm order', height: 40, onPressed: () => onAction(QuoteStatus.accepted))),
+                    Expanded(child: AppButton(label: 'Confirm order', height: 40, onPressed: () => onAccept(offer))),
                     const SizedBox(width: 8),
-                    Expanded(child: AppButton(label: 'Ask for changes', kind: ButtonKind.outline, height: 40, onPressed: () => onAction(QuoteStatus.changesRequested))),
+                    Expanded(child: AppButton(label: 'Ask for changes', kind: ButtonKind.outline, height: 40, onPressed: () => onAskChanges(code!))),
                   ]),
+                ] else if (code != null && request != null) ...[
+                  const SizedBox(height: 2),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(onPressed: () => onAskChanges(code), child: Text('View request $code')),
+                  ),
                 ],
-                if (time.isNotEmpty) Align(alignment: Alignment.centerRight, child: Text(time, style: AppText.caption.copyWith(fontSize: 10.5))),
+                if (message.time.isNotEmpty) Align(alignment: Alignment.centerRight, child: Text(message.time, style: AppText.caption.copyWith(fontSize: 10.5))),
               ]),
             ),
           ]),
@@ -338,88 +459,51 @@ class _QuoteCard extends StatelessWidget {
   }
 }
 
-/// Seller form for replying to a custom request with a price and ready date.
-class _QuoteSheet extends StatefulWidget {
-  const _QuoteSheet({required this.defaultItem, required this.basePrice});
-  final String defaultItem;
-  final double basePrice;
-  @override
-  State<_QuoteSheet> createState() => _QuoteSheetState();
-}
-
-class _QuoteSheetState extends State<_QuoteSheet> {
-  final _form = GlobalKey<FormState>();
-  late final _item = TextEditingController(text: widget.defaultItem);
-  late final _price = TextEditingController(text: widget.basePrice > 0 ? widget.basePrice.toStringAsFixed(0) : '');
-  final _note = TextEditingController();
-  DateTime _ready = DateTime.now().add(const Duration(days: 7));
+/// A photo sent in the chat (private chat-photos bucket). Tap to see it full size.
+class _PhotoBubble extends ConsumerWidget {
+  const _PhotoBubble({required this.message, required this.seen});
+  final ChatMessage message;
+  final bool seen;
 
   @override
-  void dispose() {
-    _item.dispose();
-    _price.dispose();
-    _note.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-      child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(Insets.screen, 0, Insets.screen, 16),
-          child: Form(
-            key: _form,
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Text('Send a quote', style: AppText.screenTitle),
-              const SizedBox(height: 4),
-              Text('The buyer pays only after confirming this price.', style: AppText.caption),
-              const SizedBox(height: 14),
-              LabeledField(label: 'Item', controller: _item, validator: (v) => (v ?? '').trim().isEmpty ? 'Describe the item.' : null),
-              const SizedBox(height: 12),
-              LabeledField(
-                label: 'Total price',
-                controller: _price,
-                prefixText: '₱ ',
-                keyboardType: TextInputType.number,
-                validator: (v) => (double.tryParse((v ?? '').replaceAll(',', '')) ?? 0) > 0 ? null : 'Enter a price.',
+  Widget build(BuildContext context, WidgetRef ref) {
+    final me = message.fromMe;
+    final path = message.imagePath;
+    final url = path == null ? null : ref.watch(chatPhotoUrlProvider(path)).valueOrNull;
+    final side = (MediaQuery.sizeOf(context).width * 0.6).clamp(140.0, 280.0);
+    final placeholder = Container(
+      color: AppColors.lightSand,
+      alignment: Alignment.center,
+      child: const CraftIcon(CraftIcons.image, size: 28, color: AppColors.grayBrown),
+    );
+    return Align(
+      alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+      child: Column(crossAxisAlignment: me ? CrossAxisAlignment.end : CrossAxisAlignment.start, children: [
+        Semantics(
+          image: true,
+          button: url != null && url.isNotEmpty,
+          label: me ? 'Photo you sent' : 'Photo',
+          child: GestureDetector(
+            onTap: url == null || url.isEmpty
+                ? null
+                : () => showDialog<void>(context: context, builder: (_) => Dialog(child: InteractiveViewer(child: Image.network(url)))),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: SizedBox(
+                width: side,
+                height: side,
+                child: url == null || url.isEmpty
+                    ? placeholder
+                    : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder),
               ),
-              const SizedBox(height: 12),
-              Text('Ready by', style: AppText.label),
-              const SizedBox(height: 6),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
-                  foregroundColor: AppColors.darkCocoa,
-                  side: const BorderSide(color: AppColors.linen, width: 1.5),
-                  backgroundColor: AppColors.white,
-                  alignment: Alignment.centerLeft,
-                  shape: const RoundedRectangleBorder(borderRadius: Radii.field),
-                  textStyle: AppText.body.copyWith(fontSize: 15),
-                ),
-                icon: const CraftIcon(CraftIcons.calendar, size: 18, color: AppColors.grayBrown),
-                label: Text(Fmt.date(_ready)),
-                onPressed: () async {
-                  final d = await showDatePicker(context: context, initialDate: _ready, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 180)));
-                  if (d != null) setState(() => _ready = d);
-                },
-              ),
-              const SizedBox(height: 12),
-              LabeledField(label: 'Note to the buyer (optional)', controller: _note, maxLines: 2, hint: 'Details or conditions'),
-              const SizedBox(height: 16),
-              AppButton(
-                label: 'Send quote',
-                icon: CraftIcons.send,
-                onPressed: () {
-                  if (!_form.currentState!.validate()) return;
-                  Navigator.pop(context, (Quote(item: _item.text.trim(), price: double.parse(_price.text.replaceAll(',', '')), readyBy: _ready), _note.text));
-                },
-              ),
-            ]),
+            ),
           ),
         ),
-      ),
+        if (message.time.isNotEmpty) ...[
+          const SizedBox(height: 3),
+          Text('${message.time}${me && seen ? ' · Seen' : ''}', style: AppText.caption.copyWith(fontSize: 10.5)),
+        ],
+      ]),
     );
   }
 }

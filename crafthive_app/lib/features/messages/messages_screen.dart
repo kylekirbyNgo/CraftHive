@@ -24,6 +24,8 @@ class _MessagesScreenState extends ConsumerState<MessagesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final data = ref.watch(chatsDataProvider);
+    final connection = ref.watch(firebaseUidProvider);
     final all = ref.watch(chatsProvider);
     final threads = all
         .where((t) => t.side == _side)
@@ -70,7 +72,22 @@ class _MessagesScreenState extends ConsumerState<MessagesScreen> {
             ),
           ),
           Expanded(
-            child: threads.isEmpty
+            child: all.isEmpty && (data.isLoading || connection.isLoading)
+                ? const Center(child: CircularProgressIndicator(color: AppColors.moss))
+                : all.isEmpty && (data.hasError || connection.hasError)
+                ? ListView(children: [
+                    EmptyState(
+                      icon: CraftIcons.chat,
+                      title: 'Chats could not load',
+                      message: switch (connection.error ?? data.error) {
+                        AppFailure(:final message) => message,
+                        _ => 'Check your connection and try again.',
+                      },
+                      actionLabel: 'Try again',
+                      onAction: () => ref.invalidate(firebaseUidProvider),
+                    ),
+                  ])
+                : threads.isEmpty
                 ? ListView(children: [
                     EmptyState(
                       icon: CraftIcons.chat,
@@ -84,7 +101,11 @@ class _MessagesScreenState extends ConsumerState<MessagesScreen> {
                   ])
                 : RefreshIndicator(
                     color: AppColors.moss,
-                    onRefresh: () => Future<void>.delayed(const Duration(milliseconds: 600)),
+                    // Chats update live; pulling down reconnects if the connection was lost.
+                    onRefresh: () async {
+                      if (connection.hasError) ref.invalidate(firebaseUidProvider);
+                      await Future<void>.delayed(const Duration(milliseconds: 600));
+                    },
                     child: ListView.builder(
                       padding: const EdgeInsets.only(bottom: 110),
                       itemCount: threads.length,
@@ -146,12 +167,13 @@ class _SideTabs extends StatelessWidget {
   }
 }
 
-class _ConversationTile extends StatelessWidget {
+class _ConversationTile extends ConsumerWidget {
   const _ConversationTile({required this.thread});
   final ChatThread thread;
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final bold = thread.unread > 0;
+    final online = thread.isOnline || (ref.watch(onlineProvider(thread.otherUid)).valueOrNull ?? false);
     return Semantics(
       button: true,
       label: '${thread.name}. ${thread.lastMessage}. ${thread.tag.label}. ${thread.lastTime}${bold ? '. ${thread.unread} unread' : ''}',
@@ -162,7 +184,14 @@ class _ConversationTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: Insets.screen, vertical: 12),
           decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppColors.linen))),
           child: Row(children: [
-            Avatar(initials: thread.initials, size: 48, color: thread.color, online: thread.isOnline),
+            Avatar(
+              initials: thread.initials,
+              size: 48,
+              color: thread.color,
+              online: online,
+              // Stores show their owner's photo; buyers' profiles stay private.
+              imageUrl: thread.side == ChatSide.buying ? ref.watch(sellerProvider(thread.sellerId ?? ''))?.avatarUrl : null,
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

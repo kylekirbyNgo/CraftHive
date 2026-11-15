@@ -23,15 +23,46 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   late final TextEditingController _q = TextEditingController(text: widget.initialQuery);
   late SearchFilters _f = SearchFilters(query: widget.initialQuery, categoryId: widget.categoryId);
 
+  // Read once here because "ref" cannot be used any more in dispose().
+  late final RecentSearchController _recent;
+  String _saved = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _recent = ref.read(recentSearchProvider.notifier);
+  }
+
   @override
   void dispose() {
+    // Most people read the results without pressing Enter, so the search is
+    // also saved when they leave this screen.
+    final term = _q.text.trim();
+    if (term.length >= 2 && term.toLowerCase() != _saved) {
+      final filters = _f;
+      final recent = _recent;
+      // After the screen is gone: changing a provider while widgets are being removed is not allowed.
+      Future.microtask(() => recent.add(term, filters: filters));
+    }
     _q.dispose();
     super.dispose();
   }
 
+  void _save(String v) {
+    final term = v.trim();
+    if (term.isEmpty) return;
+    _saved = term.toLowerCase();
+    _recent.add(term, filters: _f);
+  }
+
   void _submit(String v) {
-    ref.read(recentSearchProvider.notifier).add(v);
+    _save(v);
     setState(() => _f = _f.copyWith(query: v));
+  }
+
+  void _searchAgain(String term) {
+    _q.text = term;
+    _submit(term);
   }
 
   Future<void> _openFilters() async {
@@ -71,6 +102,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final categories = ref.watch(categoriesProvider);
     final results = searchProducts(ref.watch(catalogProvider), ref.watch(sellersProvider), _f);
     final title = _f.categoryId != null ? ref.watch(categoryProvider(_f.categoryId!)).name : 'Search';
+    final recent = _q.text.trim().isEmpty ? ref.watch(recentSearchProvider) : const <String>[];
 
     return Scaffold(
       appBar: ScreenHeader(title: title),
@@ -134,6 +166,21 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                 ),
               ),
             ),
+            if (recent.isNotEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                    SectionHeader('Recent searches', action: 'Clear all', onAction: _recent.clear),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: Insets.screen),
+                      child: Wrap(spacing: 8, runSpacing: 8, children: [
+                        for (final t in recent) _RecentSearchChip(text: t, onTap: () => _searchAgain(t), onRemove: () => _recent.remove(t)),
+                      ]),
+                    ),
+                  ]),
+                ),
+              ),
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(Insets.screen, 12, 8, 6),
@@ -168,6 +215,46 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       ),
     );
   }
+}
+
+/// A recent search: tap to search again, ✕ to remove it.
+class _RecentSearchChip extends StatelessWidget {
+  const _RecentSearchChip({required this.text, required this.onTap, required this.onRemove});
+  final String text;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: AppColors.white,
+        shape: const StadiumBorder(side: BorderSide(color: AppColors.linen)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          InkWell(
+            customBorder: const StadiumBorder(),
+            onTap: onTap,
+            child: Semantics(
+              button: true,
+              label: 'Search again for $text',
+              excludeSemantics: true,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 9, 4, 9),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const CraftIcon(CraftIcons.clock, size: 15, color: AppColors.grayBrown),
+                  const SizedBox(width: 6),
+                  Text(text, style: AppText.body.copyWith(fontSize: 13)),
+                ]),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Remove $text',
+            onPressed: onRemove,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            icon: const CraftIcon(CraftIcons.close, size: 14, color: AppColors.grayBrown),
+          ),
+        ]),
+      );
 }
 
 class _FilterSheet extends StatefulWidget {

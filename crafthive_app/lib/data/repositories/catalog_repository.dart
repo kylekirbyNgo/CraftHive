@@ -45,7 +45,7 @@ class SupabaseCatalogRepository implements CatalogRepository {
         final myStoreId = storeRows.where((r) => r['seller_id'] == myUserId).map((r) => r['store_id'] as String).firstOrNull;
         final sellers = [
           for (final r in storeRows)
-            if (r['is_archived'] != true || r['store_id'] == myStoreId) sellerFromRow(r, isMine: r['store_id'] == myStoreId),
+            if (r['is_archived'] != true || r['store_id'] == myStoreId) sellerFromRow(r, isMine: r['store_id'] == myStoreId, avatarUrl: _avatarUrl),
         ];
         final products = [
           for (final r in results[2])
@@ -56,6 +56,8 @@ class SupabaseCatalogRepository implements CatalogRepository {
 
   String _imageUrl(String path) =>
       path.startsWith('http') ? path : _db.storage.from('product-images').getPublicUrl(path);
+
+  String _avatarUrl(String path) => _db.storage.from('avatars').getPublicUrl(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -87,9 +89,11 @@ int _byPreferredOrder(Category a, Category b) {
 
 const _storeColors = [AppColors.moss, AppColors.clay, AppColors.slateTeal, Color(0xFFB07A16), Color(0xFF7B5A80), Color(0xFF9A6B12)];
 
-Seller sellerFromRow(Map<String, dynamic> r, {required bool isMine}) {
+/// [avatarUrl] turns store_card.avatar_path (the owner's photo, from 07_store_photos.sql) into a link.
+Seller sellerFromRow(Map<String, dynamic> r, {required bool isMine, String Function(String path)? avatarUrl}) {
   final name = r['store_name'] as String;
   final storeId = r['store_id'] as String;
+  final photo = r['avatar_path'] as String?;
   return Seller(
     id: isMine ? 'me' : storeId,
     name: name,
@@ -101,6 +105,7 @@ Seller sellerFromRow(Map<String, dynamic> r, {required bool isMine}) {
     sold: (r['items_sold_count'] as num?)?.toInt() ?? 0,
     replyTime: 'a few hours',
     bio: (r['store_description'] as String?) ?? '',
+    avatarUrl: photo == null || photo.isEmpty || avatarUrl == null ? null : avatarUrl(photo),
   );
 }
 

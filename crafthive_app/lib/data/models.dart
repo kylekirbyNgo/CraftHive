@@ -16,6 +16,9 @@ class AppUser {
     this.bio = '',
     this.location = '',
     this.isVerified = false,
+    this.avatarUrl,
+    this.hasStore = false,
+    this.phoneDigits = '',
   });
 
   /// Supabase Auth user ID (users.user_id). Empty for the offline sample user.
@@ -30,6 +33,15 @@ class AppUser {
   final String location;
   final bool isVerified;
 
+  /// Public link of the profile photo (avatars bucket), or null for initials only.
+  final String? avatarUrl;
+
+  /// The user has opened a store (store description and city can be edited).
+  final bool hasStore;
+
+  /// users.phone_number as saved: digits with the country code, e.g. 639171234567.
+  final String phoneDigits;
+
   String get initials {
     final parts = displayName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
     if (parts.isEmpty) return username.isEmpty ? '?' : username.substring(0, username.length >= 2 ? 2 : 1).toUpperCase();
@@ -39,7 +51,18 @@ class AppUser {
 
   String get firstName => displayName.split(' ').first;
 
-  AppUser copyWith({String? displayName, String? bio, String? location, String? phone, String? email, bool? isVerified}) => AppUser(
+  AppUser copyWith({
+    String? displayName,
+    String? bio,
+    String? location,
+    String? phone,
+    String? email,
+    bool? isVerified,
+    String? avatarUrl,
+    bool? hasStore,
+    String? phoneDigits,
+  }) =>
+      AppUser(
         id: id,
         username: username,
         email: email ?? this.email,
@@ -50,6 +73,9 @@ class AppUser {
         bio: bio ?? this.bio,
         location: location ?? this.location,
         isVerified: isVerified ?? this.isVerified,
+        avatarUrl: avatarUrl ?? this.avatarUrl,
+        hasStore: hasStore ?? this.hasStore,
+        phoneDigits: phoneDigits ?? this.phoneDigits,
       );
 }
 
@@ -75,6 +101,7 @@ class Seller {
     required this.replyTime,
     required this.bio,
     this.isOnline = false,
+    this.avatarUrl,
   });
 
   final String id;
@@ -88,6 +115,9 @@ class Seller {
   final String replyTime;
   final String bio;
   final bool isOnline;
+
+  /// The store owner's profile photo, or null for initials.
+  final String? avatarUrl;
 }
 
 enum ListingStatus { active, hidden, archived }
@@ -184,13 +214,38 @@ class Quote {
 enum QuoteStatus { sent, accepted, changesRequested }
 
 class ChatMessage {
-  const ChatMessage({required this.fromMe, required this.text, required this.time, this.kind = MessageKind.text, this.quote, this.seen = false});
+  const ChatMessage({
+    required this.fromMe,
+    required this.text,
+    required this.time,
+    this.kind = MessageKind.text,
+    this.quote,
+    this.seen = false,
+    this.id = '',
+    this.sentAt,
+    this.quoteId,
+    this.requestCode,
+    this.imagePath,
+  });
   final bool fromMe;
   final String text;
   final String time;
   final MessageKind kind;
   final Quote? quote;
   final bool seen;
+
+  /// Firestore message ID (chats/{chatId}/messages/{id}).
+  final String id;
+
+  /// When the server saved it (null for a moment while sending).
+  final DateTime? sentAt;
+
+  /// For quote cards: the QUOTE row and its request number (CR-…) in PostgreSQL.
+  final String? quoteId;
+  final String? requestCode;
+
+  /// For photo messages: the file in the private chat-photos bucket ({chatId}/{name}).
+  final String? imagePath;
 }
 
 /// Short tag shown under a conversation, e.g. "Custom · Accepted".
@@ -217,6 +272,11 @@ class ChatThread {
     this.unread = 0,
     this.isOnline = false,
     this.lastTime = '',
+    this.preview = '',
+    this.otherUid = '',
+    this.requestCode,
+    this.orderNumber,
+    this.otherReadAt,
   });
 
   final String id;
@@ -233,10 +293,28 @@ class ChatThread {
   final bool isOnline;
   final String lastTime;
 
+  /// Last message as saved on the chat (Firestore chats/{chatId}.lastMessage),
+  /// used when the messages themselves are not loaded.
+  final String preview;
+
+  /// The other person's user ID (for online status and typing).
+  final String otherUid;
+
+  /// Latest custom request (CR-…) and order (CH-…) discussed in this chat.
+  final String? requestCode;
+  final String? orderNumber;
+
+  /// When the other person last opened the chat; my older messages show "Seen".
+  final DateTime? otherReadAt;
+
   String get lastMessage {
-    if (messages.isEmpty) return 'Say hello';
+    if (messages.isEmpty) return preview.isEmpty ? 'Say hello' : preview;
     final m = messages.last;
-    final text = m.kind == MessageKind.quote ? 'Quote: ${m.quote!.item}' : m.text;
+    final text = switch (m.kind) {
+      MessageKind.quote => 'Quote: ${m.quote!.item}',
+      MessageKind.photo => '📷 Photo',
+      _ => m.text,
+    };
     return m.fromMe ? 'You: $text' : text;
   }
 
@@ -254,6 +332,11 @@ class ChatThread {
         unread: unread ?? this.unread,
         isOnline: isOnline,
         lastTime: lastTime ?? this.lastTime,
+        preview: preview,
+        otherUid: otherUid,
+        requestCode: requestCode,
+        orderNumber: orderNumber,
+        otherReadAt: otherReadAt,
       );
 }
 
@@ -502,15 +585,19 @@ class Order {
       );
 }
 
-enum NoticeKind { quote, payment, request, shipping, review }
+enum NoticeKind { quote, payment, request, shipping, review, order }
 
 class AppNotice {
-  const AppNotice({required this.kind, required this.title, required this.body, required this.time, required this.route, this.read = false});
+  const AppNotice({required this.kind, required this.title, required this.body, required this.time, required this.route, this.read = false, this.id = ''});
   final NoticeKind kind;
   final String title;
   final String body;
   final String time;
   final String route;
   final bool read;
-  AppNotice markRead() => AppNotice(kind: kind, title: title, body: body, time: time, route: route, read: true);
+
+  /// Firestore notifications/{uid}/items/{id}
+  final String id;
+
+  AppNotice markRead() => AppNotice(kind: kind, title: title, body: body, time: time, route: route, read: true, id: id);
 }

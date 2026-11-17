@@ -4,13 +4,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/format.dart';
+import '../../core/utils/geo.dart';
 import '../../data/providers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
 
-/// Supporting screen – Search / Category results with a filter sheet
-/// (price, custom orders, in stock) and sorting.
+/// Supporting screen – Search / Category results with typo-tolerant matching,
+/// a filter sheet (price, custom orders, in stock, distance, deliver-by date)
+/// and sorting.
 class SearchScreen extends ConsumerStatefulWidget {
   const SearchScreen({super.key, this.initialQuery = '', this.categoryId});
   final String initialQuery;
@@ -21,7 +23,12 @@ class SearchScreen extends ConsumerStatefulWidget {
 
 class _SearchScreenState extends ConsumerState<SearchScreen> {
   late final TextEditingController _q = TextEditingController(text: widget.initialQuery);
-  late SearchFilters _f = SearchFilters(query: widget.initialQuery, categoryId: widget.categoryId);
+  late SearchFilters _f = SearchFilters(
+    query: widget.initialQuery,
+    categoryId: widget.categoryId,
+    // Start from the city on the user's profile when it is one we know.
+    nearCity: Geo.resolveCity(ref.read(authProvider)?.location ?? ''),
+  );
 
   // Read once here because "ref" cannot be used any more in dispose().
   late final RecentSearchController _recent;
@@ -75,7 +82,13 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Future<void> _openSort() async {
-    final labels = {SortBy.relevance: 'Best match', SortBy.priceLow: 'Price: low to high', SortBy.priceHigh: 'Price: high to low', SortBy.rating: 'Top rated'};
+    final labels = {
+      SortBy.relevance: 'Best match',
+      SortBy.priceLow: 'Price: low to high',
+      SortBy.priceHigh: 'Price: high to low',
+      SortBy.rating: 'Top rated',
+      if (_f.nearCity != null) SortBy.nearest: 'Nearest to ${_f.nearCity}',
+    };
     final picked = await showModalBottomSheet<SortBy>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -100,7 +113,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final categories = ref.watch(categoriesProvider);
-    final results = searchProducts(ref.watch(catalogProvider), ref.watch(sellersProvider), _f);
+    final results = searchProducts(ref.watch(catalogProvider), ref.watch(sellersProvider), _f, categories: categories);
     final title = _f.categoryId != null ? ref.watch(categoryProvider(_f.categoryId!)).name : 'Search';
     final recent = _q.text.trim().isEmpty ? ref.watch(recentSearchProvider) : const <String>[];
 
@@ -203,7 +216,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   actionLabel: 'Clear filters',
                   onAction: () => setState(() {
                     _q.clear();
-                    _f = const SearchFilters();
+                    _f = SearchFilters(nearCity: _f.nearCity);
                   }),
                 ),
               )
@@ -267,26 +280,104 @@ class _FilterSheet extends StatefulWidget {
 class _FilterSheetState extends State<_FilterSheet> {
   late SearchFilters f = widget.initial;
 
+  static const _distances = <double?>[null, 10, 25, 50, 100, 300];
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final d = await showDatePicker(
+      context: context,
+      initialDate: f.neededBy ?? now.add(const Duration(days: 7)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+      helpText: 'Needed by',
+    );
+    if (d != null) setState(() => f = f.copyWith(neededBy: d));
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(Insets.screen, 0, Insets.screen, 16),
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Row(children: [
             Expanded(child: Text('Filters', style: AppText.screenTitle)),
-            TextButton(onPressed: () => setState(() => f = SearchFilters(query: f.query, categoryId: f.categoryId, sort: f.sort)), child: const Text('Reset')),
+            TextButton(onPressed: () => setState(() => f = f.reset()), child: const Text('Reset')),
           ]),
           const SizedBox(height: 10),
-          Text('Maximum price: ${f.maxPrice >= 2000 ? 'any' : Fmt.peso(f.maxPrice)}', style: AppText.label),
+          Text('Maximum price: ${f.maxPrice >= anyPrice ? 'any' : Fmt.peso(f.maxPrice)}', style: AppText.label),
           Slider(
             value: f.maxPrice,
             min: 100,
-            max: 2000,
+            max: anyPrice,
             divisions: 19,
-            label: Fmt.peso(f.maxPrice),
+            label: f.maxPrice >= anyPrice ? 'Any' : Fmt.peso(f.maxPrice),
             onChanged: (v) => setState(() => f = f.copyWith(maxPrice: v)),
           ),
+          const Divider(),
+          const SizedBox(height: 6),
+          Text('Your city', style: AppText.label),
+          const SizedBox(height: 6),
+          DropdownButtonFormField<String?>(
+            initialValue: f.nearCity,
+            isExpanded: true,
+            menuMaxHeight: 360,
+            decoration: const InputDecoration(
+              prefixIcon: Padding(padding: EdgeInsets.only(left: 14, right: 10), child: CraftIcon(CraftIcons.pin, size: 18, color: AppColors.grayBrown)),
+              prefixIconConstraints: BoxConstraints(minWidth: 0, minHeight: 0),
+            ),
+            items: [
+              const DropdownMenuItem<String?>(value: null, child: Text('Not set')),
+              for (final c in Geo.cities.keys) DropdownMenuItem<String?>(value: c, child: Text(c)),
+            ],
+            onChanged: (v) => setState(() => f = v == null ? f.copyWith(clearNearCity: true, clearDistance: true) : f.copyWith(nearCity: v)),
+          ),
+          const SizedBox(height: 12),
+          Text('Distance from you', style: AppText.label),
+          const SizedBox(height: 8),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final d in _distances)
+              AppChip(
+                label: d == null ? 'Any' : 'Within ${d.round()} km',
+                selected: f.maxDistanceKm == d,
+                onTap: f.nearCity == null && d != null
+                    ? null
+                    : () => setState(() => f = d == null ? f.copyWith(clearDistance: true) : f.copyWith(maxDistanceKm: d)),
+              ),
+          ]),
+          if (f.nearCity == null) ...[
+            const SizedBox(height: 6),
+            Text('Pick your city to filter by distance.', style: AppText.caption),
+          ],
+          const SizedBox(height: 12),
+          const Divider(),
+          const SizedBox(height: 6),
+          Text('Delivered by', style: AppText.label),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(Insets.fieldHeight), alignment: Alignment.centerLeft),
+                icon: const CraftIcon(CraftIcons.calendar, size: 18, color: AppColors.grayBrown),
+                label: Text(f.neededBy == null ? 'Any date' : Fmt.date(f.neededBy!), style: AppText.body.copyWith(fontSize: 15)),
+                onPressed: _pickDate,
+              ),
+            ),
+            if (f.neededBy != null)
+              IconButton(
+                tooltip: 'Clear date',
+                onPressed: () => setState(() => f = f.copyWith(clearNeededBy: true)),
+                icon: const CraftIcon(CraftIcons.close, size: 18, color: AppColors.grayBrown),
+              ),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            f.nearCity == null
+                ? 'Estimated from stock (or days to make) plus courier time. Set your city for a closer estimate.'
+                : 'Estimated from stock (or days to make) plus courier time from the store to ${f.nearCity}.',
+            style: AppText.caption,
+          ),
+          const SizedBox(height: 6),
           const Divider(),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,

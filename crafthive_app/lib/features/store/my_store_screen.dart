@@ -7,6 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/format.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../../shared/sharing.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
@@ -109,6 +110,9 @@ class _MyStoreScreenState extends ConsumerState<MyStoreScreen> {
     final listings = ref.watch(myListingsProvider);
     final shown = listings.where(_match).toList();
     final myCats = {for (final p in listings) p.categoryId}.map((id) => ref.watch(categoryProvider(id))).toList();
+    final hasStore = user.hasStore || ref.watch(myStoreIdProvider) != null;
+    final verification = ref.watch(myVerificationProvider).valueOrNull;
+    final verified = verification == null ? user.isVerified : verification.status == VerificationStatus.verified;
 
     return Scaffold(
       appBar: ScreenHeader(
@@ -138,14 +142,37 @@ class _MyStoreScreenState extends ConsumerState<MyStoreScreen> {
                   initials: user.initials,
                   imageUrl: user.avatarUrl,
                   name: user.username,
-                  verified: user.isVerified,
+                  verified: verified,
                   location: user.location.isEmpty ? user.country : user.location,
                   bio: user.bio.isEmpty ? 'Tell buyers what you make. Tap Edit profile to add a description.' : user.bio,
                   stats: [('${listings.length}', 'Listings'), (me.rating.toStringAsFixed(1), 'Rating'), ('${me.sold}', 'Sold')],
-                  actions: [AppButton(label: 'Edit profile', icon: CraftIcons.edit, kind: ButtonKind.clayOutline, height: 42, onPressed: () => context.push('/store/edit'))],
+                  actions: [
+                    AppButton(label: 'Edit profile', icon: CraftIcons.edit, kind: ButtonKind.clayOutline, height: 42, onPressed: () => context.push('/store/edit')),
+                    if (hasStore) AppButton(label: 'Share store', icon: CraftIcons.share, kind: ButtonKind.clayOutline, height: 42, onPressed: () => shareStore(context, ref, me)),
+                  ],
                 ),
               ),
             ),
+            if (hasStore)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(Insets.screen, 12, Insets.screen, 0),
+                  child: _VerifiedMakerTile(status: verification?.status ?? (user.isVerified ? VerificationStatus.verified : VerificationStatus.unverified)),
+                ),
+              ),
+            if (hasStore)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(Insets.screen, 10, Insets.screen, 0),
+                  child: AppButton(
+                    label: 'Store reports',
+                    icon: CraftIcons.grid,
+                    kind: ButtonKind.outline,
+                    height: 44,
+                    onPressed: () => context.push('/store/reports'),
+                  ),
+                ),
+              ),
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(Insets.screen, 18, Insets.screen, 10),
@@ -320,6 +347,46 @@ class _ListingRow extends StatelessWidget {
               ]),
             ),
             RoundIconButton(icon: CraftIcons.edit, tooltip: 'Edit ${p.title}', background: AppColors.white, size: 38, onPressed: () => context.push('/listing/${p.id}/edit')),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Entry to the Verified Maker screen, showing where the application stands.
+class _VerifiedMakerTile extends StatelessWidget {
+  const _VerifiedMakerTile({required this.status});
+  final VerificationStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = switch (status) {
+      VerificationStatus.unverified => 'Send your ID and work photos to get the badge',
+      VerificationStatus.pending => 'Your documents are being reviewed',
+      VerificationStatus.verified => 'Buyers see the badge on your store and listings',
+      VerificationStatus.rejected => 'Not approved yet. See the note and send again',
+    };
+    final verified = status == VerificationStatus.verified;
+    return Material(
+      color: verified ? AppColors.paleSage : AppColors.white,
+      shape: const RoundedRectangleBorder(borderRadius: Radii.card, side: BorderSide(color: AppColors.linen)),
+      child: InkWell(
+        borderRadius: Radii.card,
+        onTap: () => context.push('/store/verify'),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(children: [
+            CraftIcon(CraftIcons.verified, size: 24, color: verified ? AppColors.fern : AppColors.clayText),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Verified Maker', style: AppText.bodyStrong),
+                Text(subtitle, style: AppText.caption),
+              ]),
+            ),
+            const SizedBox(width: 8),
+            StatusPill(status.label, tone: status.tone),
           ]),
         ),
       ),

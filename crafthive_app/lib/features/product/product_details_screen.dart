@@ -7,6 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/format.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../../shared/sharing.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
@@ -76,7 +77,7 @@ class _ProductDetailsScreenState extends ConsumerState<ProductDetailsScreen> {
                         showMessage(context, now ? 'Saved. Find it in the Saved tab.' : 'Removed from Saved.');
                       },
                     ),
-                    RoundIconButton(icon: CraftIcons.share, tooltip: 'Share item', background: AppColors.white, onPressed: () => showComingSoon(context, 'Sharing')),
+                    RoundIconButton(icon: CraftIcons.share, tooltip: 'Share item', background: AppColors.white, onPressed: () => shareProduct(context, ref, p)),
                   ]),
                 ),
                 Positioned(

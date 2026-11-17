@@ -24,6 +24,7 @@ class NotificationsScreen extends ConsumerWidget {
         NoticeKind.shipping => (CraftIcons.truck, Tone.info),
         NoticeKind.review => (CraftIcons.star, Tone.warning),
         NoticeKind.order => (CraftIcons.orders, Tone.info),
+        NoticeKind.dispute => (CraftIcons.info, Tone.error),
       };
 
   @override

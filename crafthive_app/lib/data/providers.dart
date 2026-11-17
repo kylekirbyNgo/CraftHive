@@ -10,10 +10,12 @@ import '../core/config/firebase_config.dart';
 import '../core/theme/app_colors.dart';
 import '../shared/widgets/craft_icon.dart';
 import 'models.dart';
+import 'repositories/admin_repository.dart';
 import 'repositories/auth_repository.dart';
 import 'repositories/catalog_repository.dart';
 import 'repositories/chat_repository.dart';
 import 'repositories/custom_order_repository.dart';
+import 'repositories/dispute_repository.dart';
 import 'repositories/fake_repositories.dart';
 import 'repositories/firebase_session.dart';
 import 'repositories/listing_repository.dart';
@@ -21,8 +23,12 @@ import 'repositories/notification_repository.dart';
 import 'repositories/order_repository.dart';
 import 'repositories/presence_repository.dart';
 import 'repositories/receipt_scanner.dart';
+import 'repositories/report_repository.dart';
 import 'repositories/recent_search_repository.dart';
 import 'repositories/saved_repository.dart';
+import 'repositories/verification_repository.dart';
+import 'reports.dart';
+import 'search.dart';
 
 export 'repositories/auth_repository.dart' show AppFailure, AuthField, ProfileUpdate, SignUpData, SignUpOutcome;
 export 'repositories/catalog_repository.dart' show CatalogData;
@@ -31,6 +37,9 @@ export 'repositories/listing_repository.dart' show ListingInput, ListingPhoto, S
 export 'repositories/order_repository.dart' show PickedImage;
 export 'repositories/firebase_session.dart' show PushBanner;
 export 'repositories/receipt_scanner.dart' show ReceiptScan, formatReference;
+export 'repositories/verification_repository.dart' show idRetentionDays;
+export 'reports.dart';
+export 'search.dart';
 
 // ---------------------------------------------------------------------------
 // Session (Supabase Auth). The session is kept on the phone, so the user stays
@@ -215,60 +224,6 @@ final myStoreIdProvider = Provider<String?>((ref) => ref.watch(catalogDataProvid
 final myListingsProvider = Provider<List<Product>>(
     (ref) => ref.watch(catalogProvider).where((p) => p.sellerId == 'me' && p.status != ListingStatus.archived).toList());
 
-/// Search with the filters from the filter sheet (full-text search in PostgreSQL later).
-class SearchFilters {
-  const SearchFilters({this.query = '', this.categoryId, this.maxPrice = 2000, this.customOnly = false, this.inStockOnly = false, this.sort = SortBy.relevance});
-  final String query;
-  final String? categoryId;
-  final double maxPrice;
-  final bool customOnly;
-  final bool inStockOnly;
-  final SortBy sort;
-
-  SearchFilters copyWith({String? query, String? categoryId, bool clearCategory = false, double? maxPrice, bool? customOnly, bool? inStockOnly, SortBy? sort}) =>
-      SearchFilters(
-        query: query ?? this.query,
-        categoryId: clearCategory ? null : (categoryId ?? this.categoryId),
-        maxPrice: maxPrice ?? this.maxPrice,
-        customOnly: customOnly ?? this.customOnly,
-        inStockOnly: inStockOnly ?? this.inStockOnly,
-        sort: sort ?? this.sort,
-      );
-
-  int get activeCount => (maxPrice < 2000 ? 1 : 0) + (customOnly ? 1 : 0) + (inStockOnly ? 1 : 0);
-}
-
-enum SortBy { relevance, priceLow, priceHigh, rating }
-
-List<Product> searchProducts(List<Product> all, List<Seller> sellers, SearchFilters f) {
-  final q = f.query.trim().toLowerCase();
-  var list = all.where((p) {
-    // Published listings only; the user's own are included so they can find them too.
-    if (p.status != ListingStatus.active) return false;
-    if (f.categoryId != null && p.categoryId != f.categoryId) return false;
-    if (p.price > f.maxPrice) return false;
-    if (f.customOnly && !p.acceptsCustom) return false;
-    if (f.inStockOnly && p.stock == 0) return false;
-    if (q.isEmpty) return true;
-    final seller = sellers.where((s) => s.id == p.sellerId).firstOrNull;
-    return p.title.toLowerCase().contains(q) ||
-        p.description.toLowerCase().contains(q) ||
-        (seller?.name.toLowerCase().contains(q) ?? false) ||
-        q.split(' ').every((w) => p.title.toLowerCase().contains(w) || p.description.toLowerCase().contains(w));
-  }).toList();
-  switch (f.sort) {
-    case SortBy.priceLow:
-      list.sort((a, b) => a.price.compareTo(b.price));
-    case SortBy.priceHigh:
-      list.sort((a, b) => b.price.compareTo(a.price));
-    case SortBy.rating:
-      list.sort((a, b) => b.rating.compareTo(a.rating));
-    case SortBy.relevance:
-      break;
-  }
-  return list;
-}
-
 // ---------------------------------------------------------------------------
 // Per-user lists in Firestore: saved items (users/{uid}/savedItems, with save
 // counts in productStats) and recent searches (users/{uid}/recentSearches).
@@ -358,9 +313,7 @@ class RecentSearchController extends Notifier<List<String>> {
     state = [t, ...state.where((x) => x.toLowerCase() != t.toLowerCase())].take(recentSearchLimit).toList();
     final f = filters;
     _write((repo, me) => repo.add(me, t,
-        filters: f == null
-            ? null
-            : {'categoryId': f.categoryId, 'maxPrice': f.maxPrice, 'customOnly': f.customOnly, 'inStockOnly': f.inStockOnly, 'sort': f.sort.name}));
+        filters: f == null ? null : recentSearchFilters(f)));
   }
 
   void remove(String q) {
@@ -685,3 +638,180 @@ class NoticeActions {
 }
 
 final noticeActionsProvider = Provider<NoticeActions>((ref) => NoticeActions(ref));
+
+// ---------------------------------------------------------------------------
+// Verified Maker (SELLER verification; database/06_verified_maker.sql)
+// ---------------------------------------------------------------------------
+final verificationRepositoryProvider = Provider<VerificationRepository>((ref) => SupabaseVerificationRepository(Supabase.instance.client));
+
+/// The signed-in maker's verification (null for admins and signed-out users).
+final myVerificationProvider = FutureProvider<MyVerification?>((ref) async {
+  final user = ref.watch(authProvider);
+  if (user == null || user.isAdmin) return null;
+  return ref.watch(verificationRepositoryProvider).loadMine();
+});
+
+/// Admin: pending applications (true) or reviewed ones (false).
+final verificationQueueProvider = FutureProvider.family<List<VerificationApplication>, bool>((ref, pending) async {
+  final user = ref.watch(authProvider);
+  if (user == null || !user.isAdmin) return const [];
+  return ref.watch(verificationRepositoryProvider).loadQueue(pending: pending);
+});
+
+class VerificationActions {
+  VerificationActions(this._ref);
+  final Ref _ref;
+  VerificationRepository get _repo => _ref.read(verificationRepositoryProvider);
+
+  Future<void> submit({required String idType, required PickedImage id, required List<PickedImage> portfolio}) async {
+    await _repo.submit(idType: idType, id: id, portfolio: portfolio);
+    _ref.invalidate(myVerificationProvider);
+  }
+
+  Future<void> review({required String sellerId, required bool approve, String? note}) async {
+    try {
+      await _repo.review(sellerId: sellerId, approve: approve, note: note);
+    } finally {
+      _ref
+        ..invalidate(verificationQueueProvider(true))
+        ..invalidate(verificationQueueProvider(false))
+        ..invalidate(adminDashboardProvider);
+    }
+  }
+}
+
+final verificationActionsProvider = Provider<VerificationActions>(VerificationActions.new);
+
+// ---------------------------------------------------------------------------
+// Disputes ("Report a problem"; database/12_disputes.sql)
+// ---------------------------------------------------------------------------
+final disputeRepositoryProvider = Provider<DisputeRepository>((ref) => SupabaseDisputeRepository(Supabase.instance.client));
+
+/// The latest report on an order (by order_id), or null.
+final orderDisputeProvider = FutureProvider.family<Dispute?, String>((ref, orderId) async {
+  if (ref.watch(authProvider) == null || orderId.isEmpty) return null;
+  return ref.watch(disputeRepositoryProvider).forOrder(orderId);
+});
+
+/// Admin: open and under-review reports (true) or decided ones (false).
+final disputeQueueProvider = FutureProvider.family<List<Dispute>, bool>((ref, active) async {
+  final user = ref.watch(authProvider);
+  if (user == null || !user.isAdmin) return const [];
+  return ref.watch(disputeRepositoryProvider).queue(active: active);
+});
+
+class DisputeActions {
+  DisputeActions(this._ref);
+  final Ref _ref;
+  DisputeRepository get _repo => _ref.read(disputeRepositoryProvider);
+
+  Future<Dispute> open({required String orderId, required String reason, List<PickedImage> photos = const [], String? note}) async {
+    final d = await _repo.open(orderId: orderId, reason: reason, photos: photos, note: note);
+    _ref.invalidate(orderDisputeProvider(orderId));
+    return d;
+  }
+
+  Future<void> addEvidence(Dispute d, List<PickedImage> photos, {String? note}) async {
+    await _repo.addEvidence(dispute: d, photos: photos, note: note);
+    _ref
+      ..invalidate(orderDisputeProvider(d.orderId))
+      ..invalidate(disputeQueueProvider(true));
+  }
+
+  /// Admin: 'under_review', 'resolved' or 'closed'.
+  Future<void> update(Dispute d, String status, {String? resolution}) async {
+    try {
+      await _repo.update(disputeId: d.id, status: status, resolution: resolution);
+    } finally {
+      _ref
+        ..invalidate(disputeQueueProvider(true))
+        ..invalidate(disputeQueueProvider(false))
+        ..invalidate(orderDisputeProvider(d.orderId))
+        ..invalidate(adminDashboardProvider);
+    }
+  }
+}
+
+final disputeActionsProvider = Provider<DisputeActions>(DisputeActions.new);
+
+// ---------------------------------------------------------------------------
+// Admin dashboard and staff accounts (database/13_admin_dashboard.sql)
+// ---------------------------------------------------------------------------
+final adminRepositoryProvider = Provider<AdminRepository>((ref) => SupabaseAdminRepository(Supabase.instance.client));
+
+final adminDashboardProvider = FutureProvider<AdminDashboard?>((ref) async {
+  final user = ref.watch(authProvider);
+  if (user == null || !user.isAdmin) return null;
+  return ref.watch(adminRepositoryProvider).loadDashboard();
+});
+
+final staffProvider = FutureProvider<List<StaffMember>>((ref) async {
+  final user = ref.watch(authProvider);
+  if (user == null || !user.isAdmin) return const [];
+  return ref.watch(adminRepositoryProvider).loadStaff();
+});
+
+class AdminActions {
+  AdminActions(this._ref);
+  final Ref _ref;
+  AdminRepository get _repo => _ref.read(adminRepositoryProvider);
+
+  Future<void> invite({required String email, required String firstName, required String lastName, required String role}) async {
+    await _repo.invite(email: email, firstName: firstName, lastName: lastName, role: role);
+    _ref
+      ..invalidate(staffProvider)
+      ..invalidate(adminDashboardProvider);
+  }
+
+  Future<void> setRole(StaffMember s, String role) async {
+    await _repo.setRole(s.adminId, role);
+    _ref.invalidate(staffProvider);
+  }
+
+  Future<void> setActive(StaffMember s, bool active) async {
+    await _repo.setActive(s.adminId, active);
+    _ref
+      ..invalidate(staffProvider)
+      ..invalidate(adminDashboardProvider);
+  }
+
+  /// Pull-to-refresh on the dashboard: numbers and every queue.
+  Future<void> refreshAll() async {
+    _ref
+      ..invalidate(verificationQueueProvider(true))
+      ..invalidate(verificationQueueProvider(false))
+      ..invalidate(disputeQueueProvider(true))
+      ..invalidate(disputeQueueProvider(false))
+      ..invalidate(adminDashboardProvider);
+    await _ref.read(adminDashboardProvider.future);
+  }
+}
+
+final adminActionsProvider = Provider<AdminActions>(AdminActions.new);
+
+// ---------------------------------------------------------------------------
+// Reports (database/14_reports.sql; Search and Browse is built here)
+// ---------------------------------------------------------------------------
+final reportRepositoryProvider = Provider<ReportRepository>((ref) => SupabaseReportRepository(Supabase.instance.client));
+
+class ReportRunner {
+  ReportRunner(this._ref);
+  final Ref _ref;
+
+  Future<ReportResult> run(ReportKind kind, ReportFilters f) async {
+    final repo = _ref.read(reportRepositoryProvider);
+    if (kind != ReportKind.searchBrowse) return reportFromRows(kind, await repo.rows(kind, f));
+    final catalog = await _ref.read(catalogDataProvider.future);
+    final myStore = catalog.myStoreId;
+    return searchBrowseReport(
+      products: _ref.read(catalogProvider),
+      sellers: _ref.read(sellersProvider),
+      categories: catalog.categories,
+      filters: f,
+      trust: await repo.trustScores(),
+      storeIdOf: (id) => id == 'me' ? (myStore ?? id) : id,
+    );
+  }
+}
+
+final reportRunnerProvider = Provider<ReportRunner>(ReportRunner.new);

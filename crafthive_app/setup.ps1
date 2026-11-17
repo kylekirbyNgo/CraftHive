@@ -29,6 +29,19 @@ if ($text -notmatch "ph.crafthive.app") {
 "@
   $text = $text -replace '        </activity>', $link
 }
+# Shared item and store links (ph.crafthive.app://open/...) open the app too
+if ($text -notmatch 'android:host="open"') {
+  $share = @"
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="ph.crafthive.app" android:host="open"/>
+            </intent-filter>
+        </activity>
+"@
+  $text = $text -replace '        </activity>', $share
+}
 Set-Content -Path $manifest -Value $text -NoNewline
 flutter pub get
 Write-Host "Done. Run: flutter run   (or: flutter build apk --release)"

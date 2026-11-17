@@ -1,7 +1,10 @@
 import 'package:crafthive/core/theme/app_theme.dart';
 import 'package:crafthive/data/providers.dart';
 import 'package:crafthive/data/repositories/fake_repositories.dart';
+import 'dart:async';
+
 import 'package:crafthive/main.dart';
+import 'package:crafthive/shared/sharing.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,7 +22,13 @@ Future<void> pumpApp(WidgetTester tester,
     FakeNotificationRepository? notices,
     FakeReceiptScanner? receipts,
     FakeSavedRepository? saved,
-    FakeRecentSearchRepository? recent}) async {
+    FakeRecentSearchRepository? recent,
+    FakeVerificationRepository? verification,
+    FakeDisputeRepository? disputes,
+    FakeAdminRepository? admin,
+    FakeReportRepository? reports,
+    FakeSharer? sharer,
+    List<Override> extra = const []}) async {
   AppText.useGoogleFonts = false;
   SharedPreferences.setMockInitialValues({});
   tester.view.physicalSize = const Size(1170, 2532);
@@ -43,6 +52,12 @@ Future<void> pumpApp(WidgetTester tester,
       receiptScannerProvider.overrideWithValue(receipts ?? FakeReceiptScanner()),
       savedRepositoryProvider.overrideWithValue(saved ?? FakeSavedRepository()),
       recentSearchRepositoryProvider.overrideWithValue(recent ?? FakeRecentSearchRepository()),
+      verificationRepositoryProvider.overrideWithValue(verification ?? FakeVerificationRepository()),
+      disputeRepositoryProvider.overrideWithValue(disputes ?? FakeDisputeRepository(orders: orderRepo)),
+      adminRepositoryProvider.overrideWithValue(admin ?? FakeAdminRepository()),
+      reportRepositoryProvider.overrideWithValue(reports ?? FakeReportRepository()),
+      sharerProvider.overrideWithValue(sharer ?? FakeSharer()),
+      ...extra,
     ],
     child: const CraftHiveApp(),
   ));
@@ -63,4 +78,20 @@ Future<void> logIn(WidgetTester tester, String id, String password) async {
   await tester.enterText(field(0), id);
   await tester.enterText(field(1), password);
   await tapText(tester, 'Log in');
+}
+
+/// Records what would be shared, and lets a test send in an outside link.
+class FakeSharer implements Sharer {
+  final shared = <String>[];
+  final links = StreamController<Uri>.broadcast();
+  Uri? initial;
+
+  @override
+  Future<void> share(String text, {String? subject}) async => shared.add(text);
+
+  @override
+  Stream<Uri> get incomingLinks => links.stream;
+
+  @override
+  Future<Uri?> initialLink() async => initial;
 }

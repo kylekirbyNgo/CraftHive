@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
 import '../../shared/widgets/action_helpers.dart';
+import '../../shared/sharing.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
@@ -31,7 +32,7 @@ class _SellerStoreScreenState extends ConsumerState<SellerStoreScreen> {
     return Scaffold(
       appBar: ScreenHeader(
         title: s.name,
-        trailing: RoundIconButton(icon: CraftIcons.share, tooltip: 'Share store', onPressed: () => showComingSoon(context, 'Sharing')),
+        trailing: RoundIconButton(icon: CraftIcons.share, tooltip: 'Share store', onPressed: () => shareStore(context, ref, s)),
       ),
       body: SafeArea(
         top: false,

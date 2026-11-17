@@ -4,6 +4,10 @@ import 'package:go_router/go_router.dart';
 
 import '../../data/models.dart' show ChatSide;
 import '../../data/providers.dart';
+import '../../features/admin/admin_dispute_screen.dart';
+import '../../features/admin/admin_verification_screen.dart';
+import '../../features/disputes/report_problem_screen.dart';
+import '../../features/reports/reports_screen.dart';
 import '../../features/auth/forgot_password_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/reset_password_screen.dart';
@@ -26,6 +30,7 @@ import '../../features/selling/new_listing_screen.dart';
 import '../../features/store/edit_profile_screen.dart';
 import '../../features/store/my_store_screen.dart';
 import '../../features/store/seller_store_screen.dart';
+import '../../features/verification/verification_screen.dart';
 import '../../shared/widgets/main_shell.dart';
 
 final _rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');
@@ -69,6 +74,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         case AuthStatus.signedOut:
           return publicPaths.contains(loc) ? null : '/login';
         case AuthStatus.signedIn:
+          // CraftHive admins only use the review screens; makers and buyers never see them.
+          if (ref.read(authProvider)?.isAdmin ?? false) return loc.startsWith('/admin') ? null : '/admin';
+          if (loc.startsWith('/admin')) return '/home';
           return publicPaths.contains(loc) || loc == '/splash' || loc == '/reset-password' ? '/home' : null;
       }
     },
@@ -120,10 +128,44 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootKey,
         path: '/store',
         builder: (_, __) => const MyStoreScreen(),
-        routes: [GoRoute(parentNavigatorKey: _rootKey, path: 'edit', builder: (_, __) => const EditProfileScreen())],
+        routes: [
+          GoRoute(parentNavigatorKey: _rootKey, path: 'edit', builder: (_, __) => const EditProfileScreen()),
+          GoRoute(parentNavigatorKey: _rootKey, path: 'verify', builder: (_, __) => const VerificationScreen()),
+          GoRoute(
+            parentNavigatorKey: _rootKey,
+            path: 'reports',
+            builder: (_, __) => const StoreReportsScreen(),
+            routes: [
+              GoRoute(
+                parentNavigatorKey: _rootKey,
+                path: ':kind',
+                builder: (_, s) => ReportScreen(kind: ReportKind.byName(s.pathParameters['kind']!) ?? ReportKind.productListing, sellerMode: true),
+              ),
+            ],
+          ),
+        ],
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootKey,
+        path: '/admin',
+        builder: (_, __) => const AdminVerificationScreen(),
+        routes: [
+          GoRoute(parentNavigatorKey: _rootKey, path: 'maker/:id', builder: (_, s) => AdminApplicationScreen(sellerId: s.pathParameters['id']!)),
+          GoRoute(parentNavigatorKey: _rootKey, path: 'dispute/:id', builder: (_, s) => AdminDisputeScreen(disputeId: s.pathParameters['id']!)),
+          GoRoute(
+            parentNavigatorKey: _rootKey,
+            path: 'report/:kind',
+            builder: (_, s) => ReportScreen(kind: ReportKind.byName(s.pathParameters['kind']!) ?? ReportKind.storeDirectory, sellerMode: false),
+          ),
+        ],
       ),
       GoRoute(parentNavigatorKey: _rootKey, path: '/seller/:id', builder: (_, s) => SellerStoreScreen(sellerId: s.pathParameters['id']!)),
-      GoRoute(parentNavigatorKey: _rootKey, path: '/order/:number', builder: (_, s) => OrderDetailsScreen(number: s.pathParameters['number']!)),
+      GoRoute(
+        parentNavigatorKey: _rootKey,
+        path: '/order/:number',
+        builder: (_, s) => OrderDetailsScreen(number: s.pathParameters['number']!),
+        routes: [GoRoute(parentNavigatorKey: _rootKey, path: 'report', builder: (_, s) => ReportProblemScreen(number: s.pathParameters['number']!))],
+      ),
     ],
   );
 });

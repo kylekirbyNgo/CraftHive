@@ -113,6 +113,13 @@ class SupabaseAuthRepository implements AuthRepository {
             .eq('user_id', userId)
             .maybeSingle();
         if (row == null) {
+          // CraftHive staff live in the ADMIN table, outside the USER hierarchy.
+          // select() so this also works before 13_admin_dashboard.sql adds is_active.
+          final admin = await _db.from('admin').select().eq('auth_uid', userId).maybeSingle();
+          if (admin != null) {
+            if (admin['is_active'] == false) throw const AppFailure('This staff account was deactivated. Ask a CraftHive superadmin.');
+            return adminUserFromRow(userId, admin);
+          }
           throw const AppFailure('We could not find your profile. Please log out and sign up again.');
         }
         final store = await _db.from('store_card').select('city, store_description, verification_status').eq('seller_id', userId).maybeSingle();
@@ -292,4 +299,20 @@ String formatPhone(String digits) {
     return '+63 ${digits.substring(2, 5)} ${digits.substring(5, 8)} ${digits.substring(8)}';
   }
   return digits.isEmpty ? '' : '+$digits';
+}
+
+/// An ADMIN row as a signed-in user (they only see the review screens).
+AppUser adminUserFromRow(String userId, Map<String, dynamic> r) {
+  final email = r['email'] as String;
+  return AppUser(
+    id: userId,
+    username: email.split('@').first,
+    email: email,
+    phone: '',
+    country: 'Philippines',
+    sex: 'Prefer not to say',
+    displayName: '${r['first_name']} ${r['last_name']}'.trim(),
+    isAdmin: true,
+    adminRole: (r['role'] as String?) ?? 'moderator',
+  );
 }

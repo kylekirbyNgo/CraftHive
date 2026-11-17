@@ -25,7 +25,8 @@ void main() {
       await tapText(tester, 'Save changes');
 
       expect(find.text('Profile saved.'), findsOneWidget);
-      final saved = await auth.loadProfile(FakeAuthRepository.demoUser.id);
+      // runAsync: the fake waits 10 ms, and fake test time never passes while awaiting here.
+      final saved = (await tester.runAsync(() => auth.loadProfile(FakeAuthRepository.demoUser.id)))!;
       expect(saved.displayName, 'Ana Reyes-Cruz');
       expect(saved.bio, 'Crochet flowers and keychains. Orders take 3 to 5 days.');
       expect(saved.location, 'Cebu City');
@@ -46,7 +47,8 @@ void main() {
       expect(find.text('Enter your city.'), findsOneWidget);
       expect(find.text('Enter the 10-digit mobile number, like 917 123 4567.'), findsOneWidget);
       expect(find.text('Enter a valid email address, like you@email.com.'), findsOneWidget);
-      final saved = await auth.loadProfile(FakeAuthRepository.demoUser.id);
+      // runAsync: the fake waits 10 ms, and fake test time never passes while awaiting here.
+      final saved = (await tester.runAsync(() => auth.loadProfile(FakeAuthRepository.demoUser.id)))!;
       expect(saved.displayName, FakeAuthRepository.demoUser.displayName);
     });
 
@@ -59,7 +61,8 @@ void main() {
       expect(auth.pendingEmail, 'ana.new@email.com');
       expect(find.textContaining('Open the link we sent to ana.new@email.com'), findsOneWidget);
       // The email itself changes only after the link is opened.
-      final saved = await auth.loadProfile(FakeAuthRepository.demoUser.id);
+      // runAsync: the fake waits 10 ms, and fake test time never passes while awaiting here.
+      final saved = (await tester.runAsync(() => auth.loadProfile(FakeAuthRepository.demoUser.id)))!;
       expect(saved.email, FakeAuthRepository.demoUser.email);
     });
   });

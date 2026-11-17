@@ -274,7 +274,7 @@ async function sendPush(uid: string, p: Push): Promise<number> {
 // -----------------------------------------------------------------------------
 // Notifications list (Firestore notifications/{uid}/items) + push
 // -----------------------------------------------------------------------------
-type NoticeType = "quote" | "payment" | "request" | "shipping" | "review" | "order";
+type NoticeType = "quote" | "payment" | "request" | "shipping" | "review" | "order" | "dispute";
 
 interface Notice {
   type: NoticeType;
@@ -751,6 +751,54 @@ async function onReview(e: DbEvent) {
   });
 }
 
+// Disputes (database/12_disputes.sql): a new report goes to the other side;
+// "under review" and the admin's decision go to both.
+async function onDispute(e: DbEvent) {
+  const d = e.record;
+  const status = String(d.status);
+  if (e.type === "UPDATE" && e.old_record?.status === status) return;
+  const o = await orderInfo(String(d.order_id));
+  const byBuyer = String(d.opened_by) === o.buyerId;
+  const extra = { orderId: o.orderId, orderNumber: o.number };
+  const toBoth = async (n: Omit<Notice, "refType" | "refId">) => {
+    await notify(o.buyerId, { ...n, refType: "order", refId: o.number });
+    await notify(o.sellerId, { ...n, refType: "order", refId: o.number });
+  };
+
+  if (e.type === "INSERT") {
+    await postToChat(o, {
+      message: system(`${byBuyer ? o.buyerName : o.storeName} reported a problem with ${o.number}. A CraftHive admin will review it.`),
+      preview: "Problem reported",
+      tag: { label: "Dispute · Open", tone: "error" },
+      extra,
+      unreadFor: [byBuyer ? o.sellerId : o.buyerId],
+    });
+    await notify(byBuyer ? o.sellerId : o.buyerId, {
+      type: "dispute",
+      title: "A problem was reported",
+      body: `${byBuyer ? o.buyerName : o.storeName} reported a problem with ${o.number}: "${clip(String(d.reason ?? ""), 100)}". Add your side with photos.`,
+      refType: "order",
+      refId: o.number,
+    });
+    return;
+  }
+  if (status === "under_review") {
+    await toBoth({ type: "dispute", title: "Report under review", body: `A CraftHive admin is reviewing the report on ${o.number}.` });
+    return;
+  }
+  if (status === "resolved" || status === "closed") {
+    const decision = clip(String(d.resolution ?? ""), 140);
+    await postToChat(o, {
+      message: system(`CraftHive admin decision on ${o.number}: ${decision}`),
+      preview: "Dispute decided",
+      tag: { label: status === "resolved" ? "Dispute · Resolved" : "Dispute · Closed", tone: "info" },
+      extra,
+      unreadFor: [o.buyerId, o.sellerId],
+    });
+    await toBoth({ type: "dispute", title: status === "resolved" ? "Report resolved" : "Report closed", body: `${o.number}: ${decision}` });
+  }
+}
+
 async function handleDbEvent(req: Request, body: Json): Promise<Response> {
   if (req.headers.get("x-crafthive-secret") !== env("DB_EVENTS_SECRET")) throw new HttpError(401, "Wrong secret.");
   const e = body as unknown as DbEvent;
@@ -769,6 +817,9 @@ async function handleDbEvent(req: Request, body: Json): Promise<Response> {
       break;
     case "review":
       await onReview(e);
+      break;
+    case "dispute":
+      await onDispute(e);
       break;
     case "__firebase_check": {
       // Setup check: signs in to Google with the service account and reads one

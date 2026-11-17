@@ -10,6 +10,7 @@ import 'core/config/supabase_config.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_theme.dart';
+import 'shared/sharing.dart';
 import 'shared/widgets/realtime_scope.dart';
 
 Future<void> main() async {
@@ -63,7 +64,7 @@ class CraftHiveApp extends ConsumerWidget {
         final mq = MediaQuery.of(context);
         return MediaQuery(
           data: mq.copyWith(textScaler: mq.textScaler.clamp(minScaleFactor: 0.9, maxScaleFactor: 1.3)),
-          child: RealtimeScope(child: child!),
+          child: RealtimeScope(child: ShareLinkListener(child: child!)),
         );
       },
     );

@@ -9,7 +9,9 @@ import 'test_helpers.dart';
 /// Favorites (Firestore users/{uid}/savedItems and productStats.saveCount) and
 /// store owners' photos on store cards.
 void main() {
-  const spoon = 'Hand-carved Wooden Spoon'; // SampleIds.p1
+  // A "More to explore" item: Featured items (like the spoon, p1) sit in the
+  // Featured row on Home, whose cards have no heart.
+  const board = 'Narra Serving Board'; // SampleIds.p8
 
   Future<void> tapLabel(WidgetTester tester, String label) async {
     final f = find.bySemanticsLabel(label).first;
@@ -24,15 +26,15 @@ void main() {
       final saved = FakeSavedRepository(saved: {});
       await pumpApp(tester, auth: FakeAuthRepository(signedIn: true), saved: saved);
 
-      await tapLabel(tester, 'Save $spoon');
-      expect(saved.saved, contains(SampleIds.p1));
-      expect(saved.counts[SampleIds.p1], 1);
-      expect(find.bySemanticsLabel('Remove $spoon from saved'), findsWidgets);
+      await tapLabel(tester, 'Save $board');
+      expect(saved.saved, contains(SampleIds.p8));
+      expect(saved.counts[SampleIds.p8], 1);
+      expect(find.bySemanticsLabel('Remove $board from saved'), findsWidgets);
 
       await tester.tap(find.text('Saved').last);
       await tester.pumpAndSettle();
       expect(find.text('1 item'), findsOneWidget);
-      expect(find.text(spoon), findsWidgets);
+      expect(find.text(board), findsWidgets);
     });
 
     testWidgets('TC-F02 removing an item from the Saved tab', (tester) async {
@@ -52,10 +54,10 @@ void main() {
       final saved = FakeSavedRepository(saved: {})..failWith = const AppFailure('No internet connection.');
       await pumpApp(tester, auth: FakeAuthRepository(signedIn: true), saved: saved);
 
-      await tapLabel(tester, 'Save $spoon');
+      await tapLabel(tester, 'Save $board');
       expect(saved.saved, isEmpty);
-      expect(find.bySemanticsLabel('Remove $spoon from saved'), findsNothing);
-      expect(find.bySemanticsLabel('Save $spoon'), findsWidgets);
+      expect(find.bySemanticsLabel('Remove $board from saved'), findsNothing);
+      expect(find.bySemanticsLabel('Save $board'), findsWidgets);
     });
 
     test('TC-F04 saving the same item twice counts it once', () async {

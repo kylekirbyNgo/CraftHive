@@ -47,6 +47,7 @@ NoticeKind noticeKindFromName(String? type) => switch (type) {
       'request' => NoticeKind.request,
       'shipping' => NoticeKind.shipping,
       'review' => NoticeKind.review,
+      'dispute' => NoticeKind.dispute,
       _ => NoticeKind.order,
     };
 

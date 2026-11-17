@@ -19,6 +19,8 @@ class AppUser {
     this.avatarUrl,
     this.hasStore = false,
     this.phoneDigits = '',
+    this.isAdmin = false,
+    this.adminRole,
   });
 
   /// Supabase Auth user ID (users.user_id). Empty for the offline sample user.
@@ -41,6 +43,13 @@ class AppUser {
 
   /// users.phone_number as saved: digits with the country code, e.g. 639171234567.
   final String phoneDigits;
+
+  /// CraftHive staff (ADMIN table). Admins only see the review screens.
+  final bool isAdmin;
+
+  /// 'moderator' or 'superadmin' for staff; superadmins also manage staff accounts.
+  final String? adminRole;
+  bool get isSuperadmin => isAdmin && adminRole == 'superadmin';
 
   String get initials {
     final parts = displayName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
@@ -76,6 +85,8 @@ class AppUser {
         avatarUrl: avatarUrl ?? this.avatarUrl,
         hasStore: hasStore ?? this.hasStore,
         phoneDigits: phoneDigits ?? this.phoneDigits,
+        isAdmin: isAdmin,
+        adminRole: adminRole,
       );
 }
 
@@ -102,6 +113,8 @@ class Seller {
     required this.bio,
     this.isOnline = false,
     this.avatarUrl,
+    this.latitude,
+    this.longitude,
   });
 
   final String id;
@@ -118,6 +131,10 @@ class Seller {
 
   /// The store owner's profile photo, or null for initials.
   final String? avatarUrl;
+
+  /// Store position (store.latitude / store.longitude); null when not set.
+  final double? latitude;
+  final double? longitude;
 }
 
 enum ListingStatus { active, hidden, archived }
@@ -585,7 +602,7 @@ class Order {
       );
 }
 
-enum NoticeKind { quote, payment, request, shipping, review, order }
+enum NoticeKind { quote, payment, request, shipping, review, order, dispute }
 
 class AppNotice {
   const AppNotice({required this.kind, required this.title, required this.body, required this.time, required this.route, this.read = false, this.id = ''});
@@ -600,4 +617,279 @@ class AppNotice {
   final String id;
 
   AppNotice markRead() => AppNotice(kind: kind, title: title, body: body, time: time, route: route, read: true, id: id);
+}
+
+// ---------------------------------------------------------------------------
+// Verified Maker (SELLER verification, SELLER_PORTFOLIO_IMAGE)
+// ---------------------------------------------------------------------------
+enum VerificationStatus { unverified, pending, verified, rejected }
+
+extension VerificationStatusX on VerificationStatus {
+  String get label => switch (this) {
+        VerificationStatus.unverified => 'Not verified',
+        VerificationStatus.pending => 'Under review',
+        VerificationStatus.verified => 'Verified maker',
+        VerificationStatus.rejected => 'Not approved',
+      };
+  Tone get tone => switch (this) {
+        VerificationStatus.unverified => Tone.neutral,
+        VerificationStatus.pending => Tone.warning,
+        VerificationStatus.verified => Tone.success,
+        VerificationStatus.rejected => Tone.error,
+      };
+
+  /// The maker can send (or re-send) documents.
+  bool get canApply => this == VerificationStatus.unverified || this == VerificationStatus.rejected;
+}
+
+/// IDs accepted for the badge (Philippine government-issued).
+const acceptedIdTypes = [
+  'PhilSys National ID',
+  "Driver's License",
+  'Passport',
+  'UMID',
+  'SSS ID',
+  'PRC ID',
+  'Postal ID',
+  "Voter's ID",
+];
+
+/// The signed-in maker's own verification (my_verification).
+class MyVerification {
+  const MyVerification({
+    this.status = VerificationStatus.unverified,
+    this.idType,
+    this.submittedAt,
+    this.verifiedAt,
+    this.reviewNote,
+    this.idPurgeDate,
+    this.idOnFile = false,
+    this.portfolio = const [],
+  });
+  final VerificationStatus status;
+  final String? idType;
+  final DateTime? submittedAt;
+  final DateTime? verifiedAt;
+
+  /// Why the admin did not approve it.
+  final String? reviewNote;
+
+  /// When the ID photo is (or was) deleted.
+  final DateTime? idPurgeDate;
+  final bool idOnFile;
+
+  /// Portfolio photo paths in the private-files bucket.
+  final List<String> portfolio;
+}
+
+/// One maker's application, as an admin sees it (verification_queue).
+class VerificationApplication {
+  const VerificationApplication({
+    required this.sellerId,
+    required this.storeName,
+    required this.ownerName,
+    required this.username,
+    required this.city,
+    required this.status,
+    required this.submittedAt,
+    this.storeDescription = '',
+    this.idType,
+    this.idImagePath,
+    this.portfolio = const [],
+    this.reviewNote,
+    this.verifiedAt,
+    this.idPurgeDate,
+  });
+  final String sellerId;
+  final String storeName;
+  final String ownerName;
+  final String username;
+  final String city;
+  final String storeDescription;
+  final VerificationStatus status;
+  final DateTime submittedAt;
+  final String? idType;
+
+  /// Null once the ID photo was deleted.
+  final String? idImagePath;
+  final List<String> portfolio;
+  final String? reviewNote;
+  final DateTime? verifiedAt;
+  final DateTime? idPurgeDate;
+}
+
+// ---------------------------------------------------------------------------
+// Disputes ("Report a problem"; DISPUTE, DISPUTE_EVIDENCE)
+// ---------------------------------------------------------------------------
+enum DisputeStatus { open, underReview, resolved, closed }
+
+extension DisputeStatusX on DisputeStatus {
+  String get label => switch (this) {
+        DisputeStatus.open => 'Reported',
+        DisputeStatus.underReview => 'Under review',
+        DisputeStatus.resolved => 'Resolved',
+        DisputeStatus.closed => 'Closed',
+      };
+  Tone get tone => switch (this) {
+        DisputeStatus.open => Tone.error,
+        DisputeStatus.underReview => Tone.warning,
+        DisputeStatus.resolved => Tone.success,
+        DisputeStatus.closed => Tone.neutral,
+      };
+  bool get isActive => this == DisputeStatus.open || this == DisputeStatus.underReview;
+}
+
+/// Problems a buyer or seller can report (saved at the start of dispute.reason).
+const buyerProblems = ['Item not received', 'Item not as described', 'Item arrived damaged', 'Wrong item or quantity', 'Payment problem', 'Other'];
+const sellerProblems = ['Payment not received', 'Buyer not responding', 'Buyer refuses delivery', 'Other'];
+
+class DisputeEvidence {
+  const DisputeEvidence({required this.path, required this.byBuyer, required this.byMe, required this.uploadedAt, this.description});
+  final String path;
+  final bool byBuyer;
+  final bool byMe;
+  final DateTime uploadedAt;
+  final String? description;
+}
+
+class DisputePayment {
+  const DisputePayment({required this.reference, required this.amount, required this.status, this.proofPath});
+  final String reference;
+  final double amount;
+  final PaymentStatus status;
+  final String? proofPath;
+}
+
+/// A report on an order, with the order, accepted quote and payments it refers to.
+class Dispute {
+  const Dispute({
+    required this.id,
+    required this.orderId,
+    required this.orderNumber,
+    required this.reason,
+    required this.status,
+    required this.openedAt,
+    required this.openedByBuyer,
+    required this.openedByMe,
+    this.myRole = 'buyer',
+    this.orderStatus = '',
+    this.orderTotal = 0,
+    this.isCustom = false,
+    this.buyerName = '',
+    this.buyerUsername = '',
+    this.storeName = '',
+    this.resolution,
+    this.resolvedAt,
+    this.resolvedBy,
+    this.quoteVersion,
+    this.quotePrice,
+    this.quoteReadyBy,
+    this.payments = const [],
+    this.evidence = const [],
+  });
+  final String id;
+  final String orderId;
+  final String orderNumber;
+  final String reason;
+  final DisputeStatus status;
+  final DateTime openedAt;
+  final bool openedByBuyer;
+  final bool openedByMe;
+
+  /// 'buyer', 'seller' or 'admin' – who is looking.
+  final String myRole;
+  final String orderStatus;
+  final double orderTotal;
+  final bool isCustom;
+  final String buyerName;
+  final String buyerUsername;
+  final String storeName;
+  final String? resolution;
+  final DateTime? resolvedAt;
+
+  /// The admin handling it.
+  final String? resolvedBy;
+  final int? quoteVersion;
+  final double? quotePrice;
+  final DateTime? quoteReadyBy;
+  final List<DisputePayment> payments;
+  final List<DisputeEvidence> evidence;
+}
+
+// ---------------------------------------------------------------------------
+// Admin dashboard and staff accounts (ADMIN)
+// ---------------------------------------------------------------------------
+class AdminDashboard {
+  const AdminDashboard({
+    this.myRole = 'moderator',
+    this.makersWaiting = 0,
+    this.oldestWaitingAt,
+    this.makersVerified = 0,
+    this.approved7d = 0,
+    this.rejected7d = 0,
+    this.idsOnFile = 0,
+    this.idsDue7d = 0,
+    this.idsOverdue = 0,
+    this.idsDeleted30d = 0,
+    this.disputesOpen = 0,
+    this.disputesUnderReview = 0,
+    this.oldestOpenDisputeAt,
+    this.disputesDecided7d = 0,
+    this.myDecisions7d = 0,
+    this.stores = 0,
+    this.staff = 0,
+  });
+  final String myRole;
+  final int makersWaiting;
+  final DateTime? oldestWaitingAt;
+  final int makersVerified;
+  final int approved7d;
+  final int rejected7d;
+  final int idsOnFile;
+  final int idsDue7d;
+
+  /// ID photos past their deletion date: the daily purge job is not running.
+  final int idsOverdue;
+  final int idsDeleted30d;
+  final int disputesOpen;
+  final int disputesUnderReview;
+  final DateTime? oldestOpenDisputeAt;
+  final int disputesDecided7d;
+  final int myDecisions7d;
+  final int stores;
+  final int staff;
+
+  int get disputesActive => disputesOpen + disputesUnderReview;
+}
+
+class StaffMember {
+  const StaffMember({
+    required this.adminId,
+    required this.firstName,
+    required this.lastName,
+    required this.email,
+    required this.role,
+    this.isActive = true,
+    this.isMe = false,
+    this.createdAt,
+    this.lastSignInAt,
+    this.decisions = 0,
+  });
+  final String adminId;
+  final String firstName;
+  final String lastName;
+  final String email;
+
+  /// 'moderator' (reviews makers and disputes) or 'superadmin' (also manages staff).
+  final String role;
+  final bool isActive;
+  final bool isMe;
+  final DateTime? createdAt;
+  final DateTime? lastSignInAt;
+
+  /// Makers reviewed plus disputes decided.
+  final int decisions;
+
+  String get name => '$firstName $lastName'.trim();
+  bool get isSuperadmin => role == 'superadmin';
 }

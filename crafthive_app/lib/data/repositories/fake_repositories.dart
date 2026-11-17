@@ -5,26 +5,59 @@ import '../../core/utils/format.dart';
 import '../mock_data.dart';
 import '../sample_ids.dart';
 import '../models.dart';
+import '../reports.dart';
+import 'admin_repository.dart';
 import 'auth_repository.dart';
 import 'catalog_repository.dart';
 import 'chat_repository.dart';
 import 'custom_order_repository.dart';
+import 'dispute_repository.dart';
 import 'firebase_session.dart';
 import 'listing_repository.dart';
 import 'notification_repository.dart';
 import 'order_repository.dart';
 import 'presence_repository.dart';
 import 'receipt_scanner.dart';
+import 'report_repository.dart';
 import 'recent_search_repository.dart';
 import 'saved_repository.dart';
+import 'verification_repository.dart';
 
 /// In-memory stand-ins for Supabase, used by the automated tests so they run
 /// without the internet. The app itself always uses the Supabase versions.
 class FakeAuthRepository implements AuthRepository {
-  FakeAuthRepository({bool signedIn = false}) {
+  FakeAuthRepository({bool signedIn = false, bool signedInAsAdmin = false, bool signedInAsModerator = false}) {
     _accounts[demoUser.email] = (user: demoUser, password: demoPassword);
+    _accounts[adminUser.email] = (user: signedInAsModerator ? moderatorUser : adminUser, password: demoPassword);
     if (signedIn) _current = demoUser.id;
+    if (signedInAsAdmin || signedInAsModerator) _current = adminUser.id;
   }
+
+  /// The same staff account with the moderator role (cannot manage staff).
+  static const moderatorUser = AppUser(
+    id: 'admin-1',
+    username: 'admin',
+    email: 'admin@crafthive.test',
+    phone: '',
+    country: 'Philippines',
+    sex: 'Prefer not to say',
+    displayName: 'CraftHive Admin',
+    isAdmin: true,
+    adminRole: 'moderator',
+  );
+
+  /// CraftHive staff account (ADMIN table); same password as the demo user.
+  static const adminUser = AppUser(
+    id: 'admin-1',
+    username: 'admin',
+    email: 'admin@crafthive.test',
+    phone: '',
+    country: 'Philippines',
+    sex: 'Prefer not to say',
+    displayName: 'CraftHive Admin',
+    isAdmin: true,
+    adminRole: 'superadmin',
+  );
 
   static const demoPassword = 'craftlover8';
   static final demoUser = AppUser(
@@ -730,5 +763,389 @@ class FakeRecentSearchRepository implements RecentSearchRepository {
   Future<void> clear(String me) async {
     terms.clear();
     _changes.add(null);
+  }
+}
+
+/// Verified Maker applications kept in memory. [mine] is the demo user's own
+/// status; [applications] is what admins see.
+class FakeVerificationRepository implements VerificationRepository {
+  FakeVerificationRepository({MyVerification? mine, List<VerificationApplication>? applications})
+      : mine = mine ??
+            MyVerification(
+              status: VerificationStatus.verified,
+              idType: 'PhilSys National ID',
+              submittedAt: DateTime(2026, 10, 14),
+              verifiedAt: DateTime(2026, 10, 15),
+              idPurgeDate: DateTime(2026, 11, 14),
+            ),
+        applications = applications ?? [sampleApplication];
+
+  static final sampleApplication = VerificationApplication(
+    sellerId: 'seller-layerlab',
+    storeName: 'LayerLab PH',
+    ownerName: 'Paolo Santos',
+    username: 'layerlab.ph',
+    city: 'Makati City',
+    storeDescription: 'Small 3D-printed gifts, planters and keychains.',
+    status: VerificationStatus.pending,
+    submittedAt: DateTime(2026, 11, 15, 9, 30),
+    idType: "Driver's License",
+    idImagePath: 'seller-layerlab/verification/id_1.jpg',
+    portfolio: const ['seller-layerlab/verification/portfolio1_1.jpg', 'seller-layerlab/verification/portfolio2_1.jpg'],
+  );
+
+  MyVerification mine;
+  final List<VerificationApplication> applications;
+
+  /// When set, every call fails with this (for testing error messages).
+  AppFailure? failWith;
+
+  Future<void> _check() async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final f = failWith;
+    if (f != null) throw f;
+  }
+
+  @override
+  Future<MyVerification> loadMine() async {
+    await _check();
+    return mine;
+  }
+
+  @override
+  Future<void> submit({required String idType, required PickedImage id, required List<PickedImage> portfolio}) async {
+    await _check();
+    if (!mine.status.canApply) throw const AppFailure('Your documents are already being reviewed.');
+    if (portfolio.length < 2 || portfolio.length > 6) throw const AppFailure('Add 2 to 6 photos of your work.');
+    final now = DateTime.now();
+    final me = FakeAuthRepository.demoUser;
+    final paths = [for (var i = 0; i < portfolio.length; i++) '${me.id}/verification/portfolio${i + 1}.jpg'];
+    mine = MyVerification(status: VerificationStatus.pending, idType: idType, submittedAt: now, idOnFile: true, portfolio: paths);
+    applications
+      ..removeWhere((a) => a.sellerId == me.id)
+      ..add(VerificationApplication(
+        sellerId: me.id,
+        storeName: me.username,
+        ownerName: me.displayName,
+        username: me.username,
+        city: me.location,
+        status: VerificationStatus.pending,
+        submittedAt: now,
+        idType: idType,
+        idImagePath: '${me.id}/verification/id.jpg',
+        portfolio: paths,
+      ));
+  }
+
+  @override
+  Future<List<VerificationApplication>> loadQueue({bool pending = true}) async {
+    await _check();
+    return [for (final a in applications) if ((a.status == VerificationStatus.pending) == pending) a];
+  }
+
+  @override
+  Future<void> review({required String sellerId, required bool approve, String? note}) async {
+    await _check();
+    final i = applications.indexWhere((a) => a.sellerId == sellerId && a.status == VerificationStatus.pending);
+    if (i < 0) throw const AppFailure('This application was already reviewed. Refresh the list.');
+    if (!approve && (note ?? '').trim().length < 5) throw const AppFailure('Tell the maker why the application was not approved.');
+    final a = applications[i];
+    final now = DateTime.now();
+    final purge = DateTime(now.year, now.month, now.day + idRetentionDays);
+    final status = approve ? VerificationStatus.verified : VerificationStatus.rejected;
+    final reason = approve ? null : note!.trim();
+    applications[i] = VerificationApplication(
+      sellerId: a.sellerId,
+      storeName: a.storeName,
+      ownerName: a.ownerName,
+      username: a.username,
+      city: a.city,
+      storeDescription: a.storeDescription,
+      status: status,
+      submittedAt: a.submittedAt,
+      idType: a.idType,
+      idImagePath: a.idImagePath,
+      portfolio: a.portfolio,
+      reviewNote: reason,
+      verifiedAt: approve ? now : null,
+      idPurgeDate: purge,
+    );
+    if (sellerId == FakeAuthRepository.demoUser.id) {
+      mine = MyVerification(
+        status: status,
+        idType: a.idType,
+        submittedAt: a.submittedAt,
+        verifiedAt: approve ? now : null,
+        reviewNote: reason,
+        idPurgeDate: purge,
+        idOnFile: true,
+        portfolio: a.portfolio,
+      );
+    }
+  }
+}
+
+/// Reports kept in memory. Order details come from [orders] when given.
+class FakeDisputeRepository implements DisputeRepository {
+  FakeDisputeRepository({this.orders, List<Dispute>? disputes}) : disputes = disputes ?? [];
+  final FakeOrderRepository? orders;
+  final List<Dispute> disputes;
+  int _next = 1;
+
+  /// When set, every call fails with this (for testing error messages).
+  AppFailure? failWith;
+
+  Future<void> _check() async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final f = failWith;
+    if (f != null) throw f;
+  }
+
+  void _put(Dispute d) {
+    final i = disputes.indexWhere((x) => x.id == d.id);
+    if (i < 0) {
+      disputes.add(d);
+    } else {
+      disputes[i] = d;
+    }
+  }
+
+  Dispute _copy(Dispute d, {DisputeStatus? status, String? resolution, DateTime? resolvedAt, String? resolvedBy, List<DisputeEvidence>? evidence, String? myRole}) => Dispute(
+        id: d.id, orderId: d.orderId, orderNumber: d.orderNumber, reason: d.reason, status: status ?? d.status, openedAt: d.openedAt,
+        openedByBuyer: d.openedByBuyer, openedByMe: d.openedByMe, myRole: myRole ?? d.myRole, orderStatus: d.orderStatus, orderTotal: d.orderTotal,
+        isCustom: d.isCustom, buyerName: d.buyerName, buyerUsername: d.buyerUsername, storeName: d.storeName,
+        resolution: resolution ?? d.resolution, resolvedAt: resolvedAt ?? d.resolvedAt, resolvedBy: resolvedBy ?? d.resolvedBy,
+        quoteVersion: d.quoteVersion, quotePrice: d.quotePrice, quoteReadyBy: d.quoteReadyBy, payments: d.payments, evidence: evidence ?? d.evidence,
+      );
+
+  List<DisputeEvidence> _evidence(List<PickedImage> photos, {required bool byBuyer, String? note}) => [
+        for (var i = 0; i < photos.length; i++)
+          DisputeEvidence(path: 'me/dispute_${_next}_$i.jpg', byBuyer: byBuyer, byMe: true, uploadedAt: DateTime.now(), description: note),
+      ];
+
+  @override
+  Future<Dispute?> forOrder(String orderId) async {
+    await _check();
+    return disputes.where((d) => d.orderId == orderId).lastOrNull;
+  }
+
+  @override
+  Future<Dispute> open({required String orderId, required String reason, List<PickedImage> photos = const [], String? note}) async {
+    await _check();
+    if (disputes.any((d) => d.orderId == orderId && d.status.isActive)) {
+      throw const AppFailure('This order already has an open report. Add your photos to it instead.');
+    }
+    if (reason.trim().length < 15) throw const AppFailure('Describe the problem in at least 15 characters.');
+    if (photos.length > 5) throw const AppFailure('Add at most 5 photos at a time.');
+    final o = orders?.orders.where((x) => x.id == orderId).firstOrNull;
+    final buyer = o == null || o.side == ChatSide.buying;
+    final d = Dispute(
+      id: 'd-${_next++}',
+      orderId: orderId,
+      orderNumber: o?.number ?? orderId,
+      reason: reason.trim(),
+      status: DisputeStatus.open,
+      openedAt: DateTime.now(),
+      openedByBuyer: buyer,
+      openedByMe: true,
+      myRole: buyer ? 'buyer' : 'seller',
+      orderTotal: o?.total ?? 0,
+      isCustom: o?.isCustom ?? false,
+      storeName: buyer ? (o?.counterpart ?? '') : FakeAuthRepository.demoUser.username,
+      buyerName: buyer ? FakeAuthRepository.demoUser.displayName : o.counterpart,
+      evidence: _evidence(photos, byBuyer: buyer, note: note),
+    );
+    _put(d);
+    return d;
+  }
+
+  @override
+  Future<Dispute> addEvidence({required Dispute dispute, required List<PickedImage> photos, String? note}) async {
+    await _check();
+    final d = disputes.firstWhere((x) => x.id == dispute.id);
+    if (!d.status.isActive) throw const AppFailure('This report is already closed.');
+    if (photos.isEmpty) throw const AppFailure('Add at least one photo.');
+    final updated = _copy(d, evidence: [...d.evidence, ..._evidence(photos, byBuyer: d.myRole != 'seller', note: note)]);
+    _put(updated);
+    return updated;
+  }
+
+  @override
+  Future<List<Dispute>> queue({bool active = true}) async {
+    await _check();
+    return [for (final d in disputes) if (d.status.isActive == active) _copy(d, myRole: 'admin')];
+  }
+
+  @override
+  Future<Dispute> update({required String disputeId, required String status, String? resolution}) async {
+    await _check();
+    final d = disputes.firstWhere((x) => x.id == disputeId);
+    if (!d.status.isActive) throw const AppFailure('This report was already decided. Refresh the list.');
+    final next = disputeStatusFromDb(status);
+    if (next != DisputeStatus.underReview && (resolution ?? '').trim().length < 10) {
+      throw const AppFailure('Write the decision for both sides (at least 10 characters).');
+    }
+    final updated = next == DisputeStatus.underReview
+        ? _copy(d, status: next, resolvedBy: 'CraftHive Admin')
+        : _copy(d, status: next, resolution: resolution!.trim(), resolvedAt: DateTime.now(), resolvedBy: 'CraftHive Admin');
+    _put(updated);
+    return updated;
+  }
+}
+
+/// Admin dashboard numbers and staff kept in memory.
+class FakeAdminRepository implements AdminRepository {
+  FakeAdminRepository({AdminDashboard? dashboard, List<StaffMember>? staff})
+      : dashboard = dashboard ??
+            AdminDashboard(
+              myRole: 'superadmin',
+              makersWaiting: 1,
+              oldestWaitingAt: DateTime(2026, 11, 15, 9, 30),
+              makersVerified: 5,
+              approved7d: 1,
+              idsOnFile: 2,
+              idsDue7d: 1,
+              idsDeleted30d: 3,
+              disputesOpen: 0,
+              stores: 7,
+              staff: 2,
+            ),
+        staff = staff ??
+            [
+              const StaffMember(adminId: 'a-1', firstName: 'CraftHive', lastName: 'Admin', email: 'admin@crafthive.test', role: 'superadmin', isMe: true, decisions: 6),
+              const StaffMember(adminId: 'a-2', firstName: 'Lea', lastName: 'Santos', email: 'lea@crafthive.test', role: 'moderator', decisions: 2),
+            ];
+
+  AdminDashboard dashboard;
+  final List<StaffMember> staff;
+  final invited = <String>[];
+
+  /// When set, every call fails with this (for testing error messages).
+  AppFailure? failWith;
+
+  Future<void> _check() async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final f = failWith;
+    if (f != null) throw f;
+  }
+
+  StaffMember _with(StaffMember s, {String? role, bool? isActive}) => StaffMember(
+        adminId: s.adminId, firstName: s.firstName, lastName: s.lastName, email: s.email, role: role ?? s.role,
+        isActive: isActive ?? s.isActive, isMe: s.isMe, createdAt: s.createdAt, lastSignInAt: s.lastSignInAt, decisions: s.decisions,
+      );
+
+  bool get _amSuper => staff.any((s) => s.isMe && s.isSuperadmin);
+
+  @override
+  Future<AdminDashboard> loadDashboard() async {
+    await _check();
+    return dashboard;
+  }
+
+  @override
+  Future<List<StaffMember>> loadStaff() async {
+    await _check();
+    return List.of(staff);
+  }
+
+  @override
+  Future<void> invite({required String email, required String firstName, required String lastName, required String role}) async {
+    await _check();
+    if (!_amSuper) throw const AppFailure('Only a superadmin can manage staff accounts.');
+    final e = email.trim().toLowerCase();
+    if (staff.any((s) => s.email == e)) throw const AppFailure('This email is already a staff account.');
+    if (e == FakeAuthRepository.demoUser.email) throw const AppFailure('This email belongs to a marketplace account. Use a separate work email for staff.');
+    invited.add(e);
+    staff.add(StaffMember(adminId: 'a-${staff.length + 1}', firstName: firstName.trim(), lastName: lastName.trim(), email: e, role: role, createdAt: DateTime.now()));
+  }
+
+  @override
+  Future<void> setRole(String adminId, String role) async {
+    await _check();
+    if (!_amSuper) throw const AppFailure('Only a superadmin can change staff roles.');
+    final i = staff.indexWhere((s) => s.adminId == adminId);
+    if (staff[i].isSuperadmin && role != 'superadmin' && staff.where((s) => s.isSuperadmin && s.isActive).length <= 1) {
+      throw const AppFailure('CraftHive needs at least one superadmin.');
+    }
+    staff[i] = _with(staff[i], role: role);
+  }
+
+  @override
+  Future<void> setActive(String adminId, bool active) async {
+    await _check();
+    if (!_amSuper) throw const AppFailure('Only a superadmin can manage staff accounts.');
+    final i = staff.indexWhere((s) => s.adminId == adminId);
+    if (staff[i].isMe) throw const AppFailure("You can't deactivate your own account.");
+    staff[i] = _with(staff[i], isActive: active);
+  }
+}
+
+/// Report rows kept in memory, shaped like the database functions' JSON.
+class FakeReportRepository implements ReportRepository {
+  FakeReportRepository({Map<ReportKind, Object?>? rows, Map<String, int>? trust})
+      : data = rows ?? sampleRows,
+        trust = trust ?? const {SampleIds.storeNarra: 88, SampleIds.storePetal: 91, SampleIds.storeLayer: 64, 'store-me': 86};
+
+  final Map<ReportKind, Object?> data;
+  final Map<String, int> trust;
+  final calls = <(ReportKind, ReportFilters)>[];
+
+  /// When set, every call fails with this (for testing error messages).
+  AppFailure? failWith;
+
+  static final Map<ReportKind, Object?> sampleRows = {
+    ReportKind.storeDirectory: [
+      {'store_name': 'Petal & Twine', 'seller_username': 'petal.twine', 'store_description': 'Hand-tied bouquets.', 'address': '88 Maginhawa Street, Quezon City 1101',
+       'category_count': 1, 'active_listings': 2, 'avg_rating': 4.9, 'items_sold': 305, 'verified_status': 'verified', 'archived': false},
+      {'store_name': 'LayerLab PH', 'seller_username': 'layerlab.ph', 'store_description': '3D-printed gifts.', 'address': '201 Jupiter Street, Makati City 1209',
+       'category_count': 1, 'active_listings': 2, 'avg_rating': null, 'items_sold': 0, 'verified_status': 'pending', 'archived': false},
+    ],
+    ReportKind.productListing: [
+      {'product_title': 'Crochet Tote Bag', 'category_name': 'Crochet', 'store_name': 'ana.makes', 'price': 680, 'stock_quantity': 8, 'has_custom_option': true,
+       'created_at': '2026-10-02T03:00:00Z', 'images': 3, 'reviews': 12, 'avg_rating': 4.9, 'status': 'active'},
+    ],
+    ReportKind.customRequests: [
+      {'request_number': 'CR-1063', 'buyer_username': 'bea.lim', 'seller_username': 'ana.makes', 'store_name': 'ana.makes', 'product_title': 'Crochet Tote Bag',
+       'quantity': 2, 'budget': 1500, 'needed_by': '2026-12-10', 'reference_photos': 2, 'status': 'accepted', 'created_at': '2026-11-02T01:00:00Z',
+       'quotes': [
+         {'version': 1, 'price': 1600, 'completion': '2026-12-05', 'status': 'superseded', 'created_at': '2026-11-03T01:00:00Z'},
+         {'version': 2, 'price': 1450, 'completion': '2026-12-06', 'status': 'accepted', 'created_at': '2026-11-04T01:00:00Z'},
+       ]},
+    ],
+    ReportKind.orderPayment: [
+      {'order_number': 'CH-2026-001047', 'customer_name': 'Bea Lim', 'customer_username': 'bea.lim', 'store_name': 'ana.makes', 'order_date': '2026-11-12T02:00:00Z',
+       'total': 680, 'status': 'confirmed', 'total_paid': 680,
+       'items': [{'title': 'Crochet Tote Bag', 'quantity': 1, 'unit_price': 680}],
+       'payments': [{'reference': 'GC7781234', 'amount': 680, 'status': 'verified', 'verified_at': '2026-11-12T05:00:00Z'}]},
+    ],
+    ReportKind.sellerReliability: [
+      {'store_name': 'ana.makes', 'seller_username': 'ana.makes', 'from': '2026-08-19', 'to': '2026-11-17', 'completed': 18, 'cancelled': 1, 'on_time_rate': 0.94,
+       'requests': 9, 'quotes_accepted': 6, 'conversion_rate': 0.6667, 'avg_rating': 4.9, 'disputes': 0, 'trust_score': 86},
+    ],
+    ReportKind.marketplaceActivity: [
+      {'category_name': 'Crochet', 'from': '2026-08-19', 'to': '2026-11-17', 'listings': 4, 'orders': 21, 'custom_requests': 9, 'total_order_value': 14280,
+       'verified_sellers': 1, 'avg_trust_score': 86},
+      {'category_name': 'Flowers', 'from': '2026-08-19', 'to': '2026-11-17', 'listings': 2, 'orders': 33, 'custom_requests': 4, 'total_order_value': 18150,
+       'verified_sellers': 1, 'avg_trust_score': 91},
+    ],
+  };
+
+  Future<void> _check() async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final f = failWith;
+    if (f != null) throw f;
+  }
+
+  @override
+  Future<Object?> rows(ReportKind kind, ReportFilters f) async {
+    await _check();
+    calls.add((kind, f));
+    return data[kind] ?? const [];
+  }
+
+  @override
+  Future<Map<String, int>> trustScores() async {
+    await _check();
+    return trust;
   }
 }

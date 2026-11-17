@@ -106,6 +106,8 @@ Seller sellerFromRow(Map<String, dynamic> r, {required bool isMine, String Funct
     replyTime: 'a few hours',
     bio: (r['store_description'] as String?) ?? '',
     avatarUrl: photo == null || photo.isEmpty || avatarUrl == null ? null : avatarUrl(photo),
+    latitude: (r['latitude'] as num?)?.toDouble(),
+    longitude: (r['longitude'] as num?)?.toDouble(),
   );
 }
 

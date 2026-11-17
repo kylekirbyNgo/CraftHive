@@ -31,5 +31,20 @@ link = '''            <intent-filter>
 open(p, 'w').write(s.replace('        </activity>', link + '        </activity>', 1))
 PY
 fi
+# Shared item and store links (ph.crafthive.app://open/...) open the app too
+if ! grep -q 'android:host="open"' "$MANIFEST"; then
+  python3 - "$MANIFEST" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+link = '''            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="ph.crafthive.app" android:host="open"/>
+            </intent-filter>
+'''
+open(p, 'w').write(s.replace('        </activity>', link + '        </activity>', 1))
+PY
+fi
 flutter pub get
 echo "Done. Run: flutter run   (or: flutter build apk --release)"

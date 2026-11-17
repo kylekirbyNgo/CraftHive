@@ -12,6 +12,7 @@ import '../../shared/widgets/action_helpers.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/craft_icon.dart';
 import '../../shared/widgets/product_widgets.dart';
+import '../disputes/report_problem_screen.dart';
 
 /// Order details: status timeline, item, payment proof, and the next action
 /// for the buyer or seller. Every action is saved in PostgreSQL and checked
@@ -64,6 +65,9 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
       OrderStatus.delivered,
     ];
     final currentIndex = steps.indexOf(o.status);
+    final dispute = ref.watch(orderDisputeProvider(o.id)).valueOrNull;
+    // Either side may report a problem once money has changed hands (Milestone II, disputes).
+    final canReport = (dispute == null || !dispute.status.isActive) && (o.status != OrderStatus.pending || o.paymentRef != null);
     final paymentText = switch (o.paymentStatus) {
       null => o.paymentRef == null ? 'Not uploaded yet' : 'Sent',
       PaymentStatus.submitted => 'Sent · waiting for the seller',
@@ -128,6 +132,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
               _Card(title: 'Timeline', children: [
                 for (var i = o.history.length - 1; i >= 0; i--) _HistoryRow(event: o.history[i], latest: i == o.history.length - 1),
               ]),
+              if (dispute != null) ...[
+                const SizedBox(height: 12),
+                DisputeCard(dispute: dispute),
+              ],
               const SizedBox(height: 18),
               ..._actionsFor(o),
               if (o.requestCode != null) ...[
@@ -141,6 +149,10 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
                 kind: ButtonKind.outline,
                 onPressed: () => o.chatId != null ? context.push('/chat/${o.chatId}') : openChat(context, () => ref.read(chatActionsProvider).openForOrder(o)),
               ),
+              if (canReport) ...[
+                const SizedBox(height: 10),
+                AppButton(label: 'Report a problem', kind: ButtonKind.danger, icon: CraftIcons.info, onPressed: () => context.push('/order/${o.number}/report')),
+              ],
             ]),
           ),
         ),
@@ -187,9 +199,7 @@ class _OrderDetailsScreenState extends ConsumerState<OrderDetailsScreen> {
         return [
           if (!o.reviewed) ...[
             AppButton(label: 'Rate this item', icon: CraftIcons.star, kind: ButtonKind.honey, onPressed: () => _review(o)),
-            const SizedBox(height: 10),
           ],
-          AppButton(label: 'Report a problem', kind: ButtonKind.danger, icon: CraftIcons.info, onPressed: () => showComingSoon(context, 'Disputes')),
         ];
       }
       return [];

@@ -31,6 +31,9 @@ Future<PickedImage?> pickOnePhoto(BuildContext context, {double maxSide = 1600})
   }
 }
 
+/// The photo picker, swappable in tests (the system picker cannot run there).
+final photoPickerProvider = Provider<Future<PickedImage?> Function(BuildContext)>((ref) => pickOnePhoto);
+
 /// Runs a save and shows the error message if it fails. Returns true when it worked.
 Future<bool> runWithMessage(BuildContext context, Future<void> Function() action, {String? success}) async {
   try {

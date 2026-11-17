@@ -74,14 +74,14 @@ class FeaturedProductCard extends ConsumerWidget {
     return SizedBox(
       width: 156,
       child: _CardShell(
-        label: '${product.title}, ${Fmt.peso(product.price)}, by ${seller?.name}',
+        label: '${product.title}, ${Fmt.peso(product.price)}, by ${seller?.name}${seller?.isVerified ?? false ? ', verified maker' : ''}',
         onTap: () => context.push('/product/${product.id}'),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           ProductPhoto(product: product, height: 112),
           const SizedBox(height: 6),
           SizedBox(height: 34, child: Text(product.title, style: AppText.bodyStrong.copyWith(fontSize: 13, height: 1.3), maxLines: 2, overflow: TextOverflow.ellipsis)),
           const SizedBox(height: 4),
-          Text(seller?.name ?? '', style: AppText.caption.copyWith(fontSize: 11.5), maxLines: 1, overflow: TextOverflow.ellipsis),
+          SellerName(seller),
           const SizedBox(height: 4),
           Row(children: [Expanded(child: Text(Fmt.peso(product.price), style: AppText.price)), _Rating(product.rating)]),
         ]),
@@ -100,7 +100,7 @@ class ProductGridCard extends ConsumerWidget {
     final seller = ref.watch(sellerProvider(product.sellerId));
     final saved = ref.watch(savedProvider).contains(product.id);
     return _CardShell(
-      label: '${product.title}, ${Fmt.peso(product.price)}, by ${seller?.name}',
+      label: '${product.title}, ${Fmt.peso(product.price)}, by ${seller?.name}${seller?.isVerified ?? false ? ', verified maker' : ''}',
       onTap: () => context.push('/product/${product.id}'),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Stack(children: [
@@ -125,11 +125,28 @@ class ProductGridCard extends ConsumerWidget {
         const SizedBox(height: 6),
         Text(product.title, style: AppText.bodyStrong.copyWith(fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
         const SizedBox(height: 2),
-        Text(seller?.name ?? '', style: AppText.caption.copyWith(fontSize: 11.5), maxLines: 1, overflow: TextOverflow.ellipsis),
+        SellerName(seller),
         const SizedBox(height: 3),
         Row(children: [Expanded(child: Text(Fmt.peso(product.price), style: AppText.price)), _Rating(product.rating)]),
       ]),
     );
+  }
+}
+
+/// Store name on product cards, with the Verified Maker badge.
+class SellerName extends StatelessWidget {
+  const SellerName(this.seller, {super.key});
+  final Seller? seller;
+  @override
+  Widget build(BuildContext context) {
+    final verified = seller?.isVerified ?? false;
+    return Row(children: [
+      Flexible(child: Text(seller?.name ?? '', style: AppText.caption.copyWith(fontSize: 11.5), maxLines: 1, overflow: TextOverflow.ellipsis)),
+      if (verified) ...[
+        const SizedBox(width: 3),
+        const Tooltip(message: 'Verified maker', child: CraftIcon(CraftIcons.verified, size: 12, color: AppColors.fern)),
+      ],
+    ]);
   }
 }
 
@@ -140,6 +157,9 @@ class _SaveHeart extends StatelessWidget {
   final String title;
   @override
   Widget build(BuildContext context) => Semantics(
+        // Its own node, so screen readers (and tests) can reach the heart instead
+        // of it being merged into the product card's tap target.
+        container: true,
         button: true,
         toggled: saved,
         label: saved ? 'Remove $title from saved' : 'Save $title',

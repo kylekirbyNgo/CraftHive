@@ -14,6 +14,8 @@ dependencies:
   flutter_svg: ^2.0.10
   google_fonts: ^6.2.1
   supabase_flutter: ^2.8.0
+  # Calls the CraftHive REST API (lib/data/api/api_client.dart)
+  http: ^1.2.2
   shared_preferences: ^2.3.2
   image_picker: ^1.1.2
   crypto: ^3.0.3

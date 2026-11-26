@@ -25,7 +25,7 @@ Future<T> _run<T>(String what, Future<T> Function() call) => SupabaseAuthReposit
         return await call();
       } on PostgrestException catch (e) {
         debugPrint('CraftHive: $what failed: ${e.code} ${e.message}');
-        if (e.code == 'P0001') throw AppFailure(e.message);
+        if (e.code == 'P0001' || (e.code ?? '').startsWith('PT')) throw AppFailure(e.message);
         if (e.code == 'PGRST202' || e.code == '42883') {
           throw const AppFailure('The admin dashboard is not set up on the server yet. Run database/13_admin_dashboard.sql in Supabase.');
         }

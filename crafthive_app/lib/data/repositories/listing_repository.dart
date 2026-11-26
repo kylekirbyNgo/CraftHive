@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../api/api_client.dart';
 import 'auth_repository.dart';
 
 /// One photo on the listing form: either already saved in Storage, or just
@@ -68,6 +69,20 @@ class ListingInput {
         'has_custom_option': acceptsCustom,
         'is_draft': isDraft,
       };
+
+  /// The body for POST /products and PUT /products/{productId}.
+  Map<String, dynamic> toApi(List<String> imagePaths) => {
+        'categoryId': categoryId,
+        'title': title,
+        if (description.isNotEmpty) 'description': description,
+        'price': price,
+        'stockQuantity': stock,
+        'leadTimeDays': leadDays,
+        'acceptsCustomOrders': acceptsCustom,
+        'customOptions': customOptions,
+        'status': isDraft ? 'draft' : 'active',
+        'imagePaths': imagePaths,
+      };
 }
 
 /// What the seller typed on "Open your store" (STORE columns).
@@ -123,14 +138,17 @@ abstract class ListingRepository {
   return (ext: 'jpg', mime: 'image/jpeg');
 }
 
+/// Stores and listings through the CraftHive REST API (/api/v1/stores, /api/v1/products).
+/// Photos are uploaded to Storage first; the API then saves the listing, its
+/// photo list and its custom options in one database transaction.
 class SupabaseListingRepository implements ListingRepository {
-  SupabaseListingRepository(this._db);
+  SupabaseListingRepository(this._db) : _api = ApiClient(_db);
   final SupabaseClient _db;
+  final ApiClient _api;
 
   static const bucket = 'product-images';
 
-  /// One network step with the shared time limit and plain error messages.
-  /// The original error is printed to the debug console to help testing.
+  /// One upload with the shared time limit and plain error messages.
   Future<T> _step<T>(String what, Future<T> Function() call) => SupabaseAuthRepository.guard(() async {
         try {
           return await call();
@@ -149,62 +167,45 @@ class SupabaseListingRepository implements ListingRepository {
     }
   }
 
+  /// GET /stores → the one marked isMine.
   @override
-  Future<String?> findMyStoreId(String userId) => _step('find store', () async {
-        final row = await _db.from('store').select('store_id').eq('seller_id', userId).maybeSingle();
-        return row?['store_id'] as String?;
-      });
+  Future<String?> findMyStoreId(String userId) async {
+    final res = await _api.get('/stores');
+    return res.list.where((s) => s['isMine'] == true).map((s) => s['storeId'] as String).firstOrNull;
+  }
 
+  /// POST /stores → 201 Created. The API also makes the user a seller.
   @override
-  Future<String> openStore(String userId, StoreInput s) => _step('open store', () async {
-        final seller = await _db.from('seller').select('user_id').eq('user_id', userId).maybeSingle();
-        if (seller == null) {
-          await _db.from('seller').insert({'user_id': userId}); // verification_status starts as 'unverified'
-        }
-        final row = await _db
-            .from('store')
-            .insert({
-              'seller_id': userId,
-              'store_name': s.storeName,
-              'store_description': s.description.isEmpty ? null : s.description,
-              'address': s.address,
-              'city': s.city,
-              'postal_code': s.postalCode,
-              'weekly_capacity': s.weeklyCapacity,
-            })
-            .select('store_id')
-            .single();
-        return row['store_id'] as String;
-      });
+  Future<String> openStore(String userId, StoreInput s) async {
+    final res = await _api.post('/stores', body: {
+      'name': s.storeName,
+      if (s.description.isNotEmpty) 'description': s.description,
+      'address': s.address,
+      'city': s.city,
+      'postalCode': s.postalCode,
+      'weeklyCapacity': s.weeklyCapacity,
+    });
+    return res.map['storeId'] as String;
+  }
 
+  /// Uploads the photos to {storeId}/listing_{time}/, then POST /products.
   @override
   Future<String> createListing({required String storeId, required ListingInput input}) async {
-    // Saved as a draft first, so buyers never see it before its photos are in.
-    final productId = await _step('save product', () async {
-      final row = await _db.from('product').insert({...input.toRow(), 'store_id': storeId, 'is_draft': true}).select('product_id').single();
-      return row['product_id'] as String;
-    });
     final uploaded = <String>[];
     try {
-      final paths = await _savePhotos(storeId, productId, input.photos, uploaded);
-      await _replaceImageRows(productId, paths);
-      await _syncOptions(productId, input.customOptions, const []);
-      if (!input.isDraft) {
-        await _step('publish product', () async {
-          await _db.from('product').update({'is_draft': false}).eq('product_id', productId);
-        });
-      }
-      return productId;
+      final folder = '$storeId/listing_${DateTime.now().millisecondsSinceEpoch}';
+      final paths = await _savePhotos(folder, input.photos, uploaded);
+      final res = await _api.post('/products', body: input.toApi(paths));
+      return res.map['productId'] as String;
     } catch (_) {
-      // Undo the half-saved listing so the seller can simply try again.
-      await _quietly('delete product', () async {
-        await _db.from('product').delete().eq('product_id', productId);
-      });
+      // Nothing was saved in the database, so only the uploaded files need removing.
       await _removeFiles(uploaded);
       rethrow;
     }
   }
 
+  /// Uploads new photos to {storeId}/{productId}/, then PUT /products/{productId}
+  /// with the whole listing. Photos left out are deleted from Storage afterwards.
   @override
   Future<void> updateListing({
     required String storeId,
@@ -216,28 +217,24 @@ class SupabaseListingRepository implements ListingRepository {
     final uploaded = <String>[];
     var paths = <String>[];
     try {
-      paths = await _savePhotos(storeId, productId, input.photos, uploaded);
-      await _replaceImageRows(productId, paths);
+      paths = await _savePhotos('$storeId/$productId', input.photos, uploaded);
+      await _api.put('/products/$productId', body: input.toApi(paths));
     } catch (_) {
       await _removeFiles(uploaded);
       rethrow;
     }
-    await _syncOptions(productId, input.customOptions, previousOptions);
-    // The product row last: publishing a draft only happens once its photos are saved.
-    await _step('save product', () async {
-      await _db.from('product').update(input.toRow()).eq('product_id', productId);
-    });
     await _removeFiles([for (final p in previousPaths) if (!paths.contains(p)) p]);
   }
 
+  /// PATCH /products/{productId} {"status": "archived"}: hidden from buyers, past orders keep their records.
   @override
-  Future<void> archiveListing(String productId) => _step('archive product', () async {
-        await _db.from('product').update({'is_archived': true}).eq('product_id', productId);
-      });
+  Future<void> archiveListing(String productId) async {
+    await _api.patch('/products/$productId', body: {'status': 'archived'});
+  }
 
-  /// Uploads the new photos to {store_id}/{product_id}/… and returns every
-  /// photo's path in order (cover first). [uploaded] collects new paths for clean-up.
-  Future<List<String>> _savePhotos(String storeId, String productId, List<ListingPhoto> photos, List<String> uploaded) async {
+  /// Uploads the new photos into [folder] and returns every photo's path in
+  /// order (cover first). [uploaded] collects new paths for clean-up.
+  Future<List<String>> _savePhotos(String folder, List<ListingPhoto> photos, List<String> uploaded) async {
     final paths = <String>[];
     final stamp = DateTime.now().millisecondsSinceEpoch;
     for (var i = 0; i < photos.length; i++) {
@@ -247,7 +244,7 @@ class SupabaseListingRepository implements ListingRepository {
         continue;
       }
       final type = photoType(photo.fileName);
-      final path = '$storeId/$productId/${stamp}_${i + 1}.${type.ext}';
+      final path = '$folder/${stamp}_${i + 1}.${type.ext}';
       await _step('upload photo ${i + 1}', () async {
         await _db.storage.from(bucket).uploadBinary(path, photo.bytes!, fileOptions: FileOptions(contentType: type.mime));
       });
@@ -256,27 +253,6 @@ class SupabaseListingRepository implements ListingRepository {
     }
     return paths;
   }
-
-  Future<void> _replaceImageRows(String productId, List<String> paths) => _step('save photo list', () async {
-        await _db.from('product_image').delete().eq('product_id', productId);
-        if (paths.isEmpty) return;
-        await _db.from('product_image').insert([
-          for (var i = 0; i < paths.length; i++) {'product_id': productId, 'image_path': paths[i], 'sort_order': i + 1},
-        ]);
-      });
-
-  /// Adds new option labels and deletes removed ones (kept ones stay, so past
-  /// custom requests keep their links to them).
-  Future<void> _syncOptions(String productId, List<String> wanted, List<String> previous) => _step('save options', () async {
-        final removed = [for (final o in previous) if (!wanted.contains(o)) o];
-        final added = [for (final o in wanted) if (!previous.contains(o)) o];
-        if (removed.isNotEmpty) {
-          await _db.from('product_custom_option').delete().eq('product_id', productId).inFilter('label', removed);
-        }
-        if (added.isNotEmpty) {
-          await _db.from('product_custom_option').insert([for (final o in added) {'product_id': productId, 'label': o}]);
-        }
-      });
 
   Future<void> _removeFiles(List<String> paths) async {
     final inStorage = [for (final p in paths) if (!p.startsWith('http')) p];

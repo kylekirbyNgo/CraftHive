@@ -81,7 +81,7 @@ Future<T> firebaseGuard<T>(Future<T> Function() call, {Duration timeout = const 
     throw const AppFailure('The photo could not be sent. Please try again.');
   } on PostgrestException catch (e) {
     // Messages raised by chat_target (SQLSTATE P0001) are written for the user.
-    throw AppFailure(e.code == 'P0001' ? e.message : serverMessage);
+    throw AppFailure(e.code == 'P0001' || (e.code ?? '').startsWith('PT') ? e.message : serverMessage);
   } catch (e) {
     final text = e.toString();
     if (RegExp(r'SocketException|Failed host lookup|Network is unreachable', caseSensitive: false).hasMatch(text)) {

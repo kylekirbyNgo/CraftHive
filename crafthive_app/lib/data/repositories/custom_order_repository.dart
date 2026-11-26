@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../api/api_client.dart';
 import '../models.dart';
+import 'auth_repository.dart' show AppFailure;
 import 'listing_repository.dart' show photoType;
 import 'order_repository.dart';
 
@@ -51,32 +53,45 @@ abstract class CustomOrderRepository {
 
 String _day(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
+/// Custom requests and quotes through the CraftHive REST API (/api/v1/custom-requests).
 class SupabaseCustomOrderRepository implements CustomOrderRepository {
-  SupabaseCustomOrderRepository(this._db);
+  SupabaseCustomOrderRepository(this._db) : _api = ApiClient(_db);
   final SupabaseClient _db;
+  final ApiClient _api;
+
+  /// quote id → request id, so a quote can be answered at
+  /// /custom-requests/{requestId}/quotes/{quoteId}.
+  final _requestOfQuote = <String, String>{};
 
   String get _me => _db.auth.currentUser?.id ?? '';
 
+  /// GET /custom-requests
   @override
-  Future<List<CustomRequest>> loadRequests() => runDb('load custom requests', () async {
-        final rows = await _db.rpc<dynamic>('my_custom_requests');
-        return [for (final r in (rows as List? ?? const [])) customRequestFromJson(Map<String, dynamic>.from(r as Map))];
-      });
+  Future<List<CustomRequest>> loadRequests() async {
+    final res = await _api.get('/custom-requests');
+    final requests = [for (final j in res.list) customRequestFromApi(j)];
+    for (final r in requests) {
+      for (final q in r.quotes) {
+        _requestOfQuote[q.id] = r.id;
+      }
+    }
+    return requests;
+  }
 
+  /// POST /custom-requests, then the optional reference photo:
+  /// upload to private-files/{buyer}/{request}/ and POST /custom-requests/{id}/images.
   @override
   Future<String> submitRequest(CustomRequestInput i) async {
-    final saved = await runDb('send custom request', () async {
-      final res = await _db.rpc<dynamic>('submit_custom_request', params: {
-        'p_product_id': i.productId,
-        'p_description': i.description,
-        'p_quantity': i.quantity,
-        'p_budget': i.budget,
-        'p_needed_by': _day(i.neededBy),
-        'p_options': i.options,
-      });
-      return Map<String, dynamic>.from(res as Map);
+    final res = await _api.post('/custom-requests', body: {
+      'productId': i.productId,
+      'description': i.description,
+      'quantity': i.quantity,
+      if (i.budget != null) 'budget': i.budget,
+      'neededBy': _day(i.neededBy),
+      'options': i.options,
     });
-    final requestId = saved['request_id'] as String;
+    final saved = res.map;
+    final requestId = saved['requestId'] as String;
     final photo = i.photo;
     if (photo != null) {
       // The request is already saved; a failed photo upload should not lose it.
@@ -85,39 +100,60 @@ class SupabaseCustomOrderRepository implements CustomOrderRepository {
         final path = '$_me/$requestId/reference_1.${type.ext}';
         await runDb('upload reference photo', () async {
           await _db.storage.from(privateBucket).uploadBinary(path, photo.bytes, fileOptions: FileOptions(contentType: type.mime));
-          await _db.from('custom_request_image').insert({'request_id': requestId, 'image_path': path});
         });
+        await _api.post('/custom-requests/$requestId/images', body: {'imagePath': path});
       } catch (e) {
         debugPrint('CraftHive: reference photo not saved: $e');
       }
     }
-    return saved['request_number'] as String;
+    return saved['requestNumber'] as String;
   }
 
+  /// PATCH /custom-requests/{requestId} {"status": "cancelled"}
   @override
-  Future<void> cancelRequest(CustomRequest r) => runDb('cancel request', () async {
-        await _db.rpc<dynamic>('cancel_custom_request', params: {'p_request_id': r.id});
-      });
+  Future<void> cancelRequest(CustomRequest r) async {
+    await _api.patch('/custom-requests/${r.id}', body: {'status': 'cancelled'});
+  }
 
+  /// POST /custom-requests/{requestId}/quotes
   @override
-  Future<void> sendQuote({required CustomRequest request, required double price, required DateTime readyBy, String? message}) =>
-      runDb('send quote', () async {
-        await _db.rpc<dynamic>('send_quote', params: {'p_request_id': request.id, 'p_price': price, 'p_ready_by': _day(readyBy), 'p_message': message});
-      });
+  Future<void> sendQuote({required CustomRequest request, required double price, required DateTime readyBy, String? message}) async {
+    await _api.post('/custom-requests/${request.id}/quotes', body: {
+      'price': price,
+      'readyBy': _day(readyBy),
+      if (message != null && message.trim().isNotEmpty) 'message': message.trim(),
+    });
+  }
 
+  /// PATCH /custom-requests/{requestId} {"status": "declined", "reason": ...}
   @override
-  Future<void> declineRequest({required CustomRequest request, required String reason}) => runDb('decline request', () async {
-        await _db.rpc<dynamic>('decline_custom_request', params: {'p_request_id': request.id, 'p_reason': reason});
-      });
+  Future<void> declineRequest({required CustomRequest request, required String reason}) async {
+    await _api.patch('/custom-requests/${request.id}', body: {'status': 'declined', 'reason': reason});
+  }
 
+  /// PATCH /custom-requests/{requestId}/quotes/{quoteId} {"status": "accepted"} → the new order.
   @override
-  Future<String> acceptQuote(QuoteOffer quote) => runDb('accept quote',
-      () async => (await _db.rpc<dynamic>('respond_to_quote', params: {'p_quote_id': quote.id, 'p_accept': true})) as String);
+  Future<String> acceptQuote(QuoteOffer quote) async {
+    final res = await _api.patch(await _quotePath(quote), body: {'status': 'accepted'});
+    final order = Map<String, dynamic>.from(res.map['order'] as Map);
+    return order['orderNumber'] as String;
+  }
 
+  /// PATCH /custom-requests/{requestId}/quotes/{quoteId} {"status": "changes_requested"}
   @override
-  Future<void> requestChanges(QuoteOffer quote, String note) => runDb('ask for changes', () async {
-        await _db.rpc<dynamic>('respond_to_quote', params: {'p_quote_id': quote.id, 'p_accept': false, 'p_note': note});
-      });
+  Future<void> requestChanges(QuoteOffer quote, String note) async {
+    await _api.patch(await _quotePath(quote), body: {
+      'status': 'changes_requested',
+      if (note.trim().isNotEmpty) 'note': note.trim(),
+    });
+  }
+
+  Future<String> _quotePath(QuoteOffer quote) async {
+    if (!_requestOfQuote.containsKey(quote.id)) await loadRequests();
+    final requestId = _requestOfQuote[quote.id];
+    if (requestId == null) throw const AppFailure('This quote is no longer open. Refresh to see the latest one.');
+    return '/custom-requests/$requestId/quotes/${quote.id}';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +205,39 @@ CustomRequest customRequestFromJson(Map<String, dynamic> j) => CustomRequest(
             createdAt: _dt(q['created_at']),
             message: q['message'] as String?,
             declineReason: q['decline_reason'] as String?,
+          ),
+      ],
+    );
+
+
+/// JSON from the REST API (GET /custom-requests, camelCase) → model.
+CustomRequest customRequestFromApi(Map<String, dynamic> j) => CustomRequest(
+      id: j['requestId'] as String,
+      code: j['requestNumber'] as String,
+      side: j['side'] == 'selling' ? ChatSide.selling : ChatSide.buying,
+      counterpart: (j['counterpart'] as String?) ?? '',
+      productId: j['productId'] as String,
+      productTitle: (j['productTitle'] as String?) ?? 'Item',
+      description: (j['description'] as String?) ?? '',
+      options: [for (final o in (j['options'] as List? ?? const [])) o as String],
+      quantity: (j['quantity'] as num).toInt(),
+      budget: (j['budget'] as num?)?.toDouble(),
+      neededBy: _dt(j['neededByDate']),
+      sentAt: _dt(j['createdAt']),
+      status: requestStatusFromDb(j['status'] as String),
+      orderNumber: j['orderNumber'] as String?,
+      imagePaths: [for (final p in (j['imagePaths'] as List? ?? const [])) p as String],
+      quotes: [
+        for (final q in (j['quotes'] as List? ?? const []))
+          QuoteOffer(
+            id: (q as Map)['quoteId'] as String,
+            version: (q['versionNo'] as num).toInt(),
+            price: (q['offeredPrice'] as num).toDouble(),
+            readyBy: _dt(q['estimatedCompletionDate']),
+            status: offerStatusFromDb(q['status'] as String),
+            createdAt: _dt(q['createdAt']),
+            message: q['message'] as String?,
+            declineReason: q['declineReason'] as String?,
           ),
       ],
     );

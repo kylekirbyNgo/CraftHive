@@ -3,9 +3,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../shared/widgets/craft_icon.dart';
+import '../api/api_client.dart';
 import '../mock_data.dart';
 import '../models.dart';
-import 'auth_repository.dart';
 
 /// Everything Home, Search and the stores need, loaded in one go.
 class CatalogData {
@@ -29,35 +29,34 @@ abstract class CatalogRepository {
 /// How many top-rated listings appear in Home's Featured row.
 const featuredCount = 5;
 
+/// Reads the catalog through the CraftHive REST API:
+/// GET /categories, GET /stores and GET /products, plus GET /stores/{storeId}/products
+/// for the user's own store (which also returns their drafts and archived listings).
 class SupabaseCatalogRepository implements CatalogRepository {
-  SupabaseCatalogRepository(this._db);
-  final SupabaseClient _db;
+  SupabaseCatalogRepository(SupabaseClient db) : _api = ApiClient(db);
+  final ApiClient _api;
 
   @override
-  Future<CatalogData> load({required String myUserId}) => SupabaseAuthRepository.guard(() async {
-        final results = await Future.wait([
-          _db.from('category').select('category_id, category_name'),
-          _db.from('store_card').select(),
-          _db.from('product_card').select().order('created_at', ascending: false),
-        ]);
-        final categories = [for (final r in results[0]) categoryFromRow(r)]..sort(_byPreferredOrder);
-        final storeRows = results[1];
-        final myStoreId = storeRows.where((r) => r['seller_id'] == myUserId).map((r) => r['store_id'] as String).firstOrNull;
-        final sellers = [
-          for (final r in storeRows)
-            if (r['is_archived'] != true || r['store_id'] == myStoreId) sellerFromRow(r, isMine: r['store_id'] == myStoreId, avatarUrl: _avatarUrl),
-        ];
-        final products = [
-          for (final r in results[2])
-            productFromRow(r, sellerId: r['store_id'] == myStoreId ? 'me' : r['store_id'] as String, imageUrl: _imageUrl),
-        ];
-        return CatalogData(categories: categories, sellers: sellers, products: markFeatured(products), myStoreId: myStoreId);
-      });
-
-  String _imageUrl(String path) =>
-      path.startsWith('http') ? path : _db.storage.from('product-images').getPublicUrl(path);
-
-  String _avatarUrl(String path) => _db.storage.from('avatars').getPublicUrl(path);
+  Future<CatalogData> load({required String myUserId}) async {
+    final results = await Future.wait([_api.get('/categories'), _api.get('/stores'), _api.get('/products')]);
+    final categories = [for (final r in results[0].list) categoryFromApi(r)]..sort(_byPreferredOrder);
+    final storeRows = results[1].list;
+    final myStoreId = storeRows.where((r) => r['isMine'] == true).map((r) => r['storeId'] as String).firstOrNull;
+    final sellers = [
+      for (final r in storeRows)
+        if (r['isArchived'] != true || r['storeId'] == myStoreId) sellerFromApi(r, isMine: r['storeId'] == myStoreId),
+    ];
+    var productRows = results[2].list;
+    if (myStoreId != null) {
+      final mine = (await _api.get('/stores/$myStoreId/products')).list;
+      productRows = [...mine, ...productRows.where((r) => r['storeId'] != myStoreId)]
+        ..sort((a, b) => ((b['createdAt'] as String?) ?? '').compareTo((a['createdAt'] as String?) ?? ''));
+    }
+    final products = [
+      for (final r in productRows) productFromApi(r, sellerId: r['storeId'] == myStoreId ? 'me' : r['storeId'] as String),
+    ];
+    return CatalogData(categories: categories, sellers: sellers, products: markFeatured(products), myStoreId: myStoreId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,4 +155,61 @@ String initialsOf(String name) {
   if (words.isEmpty) return '?';
   if (words.length == 1) return words.first.substring(0, words.first.length >= 2 ? 2 : 1).toUpperCase();
   return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+
+// ---------------------------------------------------------------------------
+// REST API JSON (camelCase) → model
+// ---------------------------------------------------------------------------
+
+/// GET /categories item → model (icons and colours still come from the app).
+Category categoryFromApi(Map<String, dynamic> r) => categoryFromRow({'category_id': r['categoryId'], 'category_name': r['name']});
+
+/// GET /stores item → model. The API already gives the avatar's public link.
+Seller sellerFromApi(Map<String, dynamic> r, {required bool isMine}) {
+  final name = r['name'] as String;
+  final storeId = r['storeId'] as String;
+  return Seller(
+    id: isMine ? 'me' : storeId,
+    name: name,
+    initials: initialsOf(name),
+    color: _storeColors[storeId.hashCode.abs() % _storeColors.length],
+    location: (r['city'] as String?) ?? '',
+    isVerified: r['isVerified'] == true,
+    rating: (r['rating'] as num?)?.toDouble() ?? 0,
+    sold: (r['itemsSold'] as num?)?.toInt() ?? 0,
+    replyTime: 'a few hours',
+    bio: (r['description'] as String?) ?? '',
+    avatarUrl: r['avatarUrl'] as String?,
+    latitude: (r['latitude'] as num?)?.toDouble(),
+    longitude: (r['longitude'] as num?)?.toDouble(),
+  );
+}
+
+/// GET /products item → model. The API already gives the photos' public links.
+Product productFromApi(Map<String, dynamic> r, {required String sellerId}) {
+  final paths = [for (final p in (r['imagePaths'] as List?) ?? const []) p as String];
+  return Product(
+    id: r['productId'] as String,
+    title: r['title'] as String,
+    sellerId: sellerId,
+    categoryId: r['categoryId'] as String,
+    price: (r['price'] as num).toDouble(),
+    description: (r['description'] as String?) ?? '',
+    rating: (r['rating'] as num?)?.toDouble() ?? 0,
+    reviewCount: (r['reviewCount'] as num?)?.toInt() ?? 0,
+    sold: (r['soldCount'] as num?)?.toInt() ?? 0,
+    stock: (r['stockQuantity'] as num?)?.toInt() ?? 0,
+    leadDays: (r['leadTimeDays'] as num?)?.toInt() ?? 0,
+    acceptsCustom: r['acceptsCustomOrders'] == true,
+    customOptions: [for (final o in (r['customOptions'] as List?) ?? const []) o as String],
+    photoCount: paths.isEmpty ? 1 : paths.length,
+    imageUrls: [for (final u in (r['imageUrls'] as List?) ?? const []) u as String],
+    imagePaths: paths,
+    status: switch (r['status']) {
+      'archived' => ListingStatus.archived,
+      'draft' => ListingStatus.hidden,
+      _ => ListingStatus.active,
+    },
+  );
 }

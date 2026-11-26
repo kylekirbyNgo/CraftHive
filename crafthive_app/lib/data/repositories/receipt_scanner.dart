@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
-import 'package:supabase_flutter/supabase_flutter.dart' show FunctionException, SupabaseClient;
+import 'package:supabase_flutter/supabase_flutter.dart' show SupabaseClient;
 
-import 'auth_repository.dart';
+import '../api/api_client.dart';
 import 'order_repository.dart' show PickedImage;
 
 /// What the scan-receipt Edge Function read from a payment screenshot.
@@ -62,29 +62,23 @@ abstract class ReceiptScanner {
   Future<ReceiptScan> scan({required String orderId, required PickedImage image});
 }
 
+/// POST /orders/{orderId}/receipt-scans on the CraftHive REST API, which passes
+/// the screenshot to the scan-receipt function (OCR.space).
 class EdgeReceiptScanner implements ReceiptScanner {
-  EdgeReceiptScanner(this._db);
-  final SupabaseClient _db;
+  EdgeReceiptScanner(SupabaseClient db) : _api = ApiClient(db);
+  final ApiClient _api;
 
   @override
-  Future<ReceiptScan> scan({required String orderId, required PickedImage image}) => SupabaseAuthRepository.guard(() async {
-        // The free OCR plan takes files up to 1 MB; the original stays untouched for upload.
-        final small = await compute(shrinkForOcr, image.bytes);
-        try {
-          final res = await _db.functions.invoke('scan-receipt', body: {
-            'orderId': orderId,
-            'image': base64Encode(small),
-            'mime': imageMime(small),
-            'hash': image.hash,
-          });
-          return ReceiptScan.fromJson(Map<String, dynamic>.from(res.data as Map));
-        } on FunctionException catch (e) {
-          final details = e.details;
-          final message = details is Map ? details['error'] as String? : null;
-          debugPrint('CraftHive: receipt scan failed: ${e.status} $details');
-          throw AppFailure(message ?? 'The receipt could not be read. Type the reference number instead.');
-        }
-      });
+  Future<ReceiptScan> scan({required String orderId, required PickedImage image}) async {
+    // The free OCR plan takes files up to 1 MB; the original stays untouched for upload.
+    final small = await compute(shrinkForOcr, image.bytes);
+    final res = await _api.post('/orders/$orderId/receipt-scans', body: {
+      'image': base64Encode(small),
+      'mime': imageMime(small),
+      'hash': image.hash,
+    });
+    return ReceiptScan.fromJson(res.map);
+  }
 }
 
 /// image/png, image/webp or image/jpeg, from the first bytes of the file.

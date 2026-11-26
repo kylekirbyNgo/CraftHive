@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/utils/format.dart';
+import '../api/api_client.dart';
 import '../models.dart';
 import 'auth_repository.dart';
 import 'listing_repository.dart' show photoType;
@@ -48,13 +49,14 @@ abstract class OrderRepository {
 const privateBucket = 'private-files';
 
 /// Runs a call against Supabase and turns database errors into messages for the user.
-/// Functions in 04_orders_and_custom_orders.sql raise their messages with SQLSTATE P0001.
+/// Database functions raise their messages with SQLSTATE P0001, or PT401–PT422
+/// (database/15_rest_api.sql) where the HTTP status matters.
 Future<T> runDb<T>(String what, Future<T> Function() call) => SupabaseAuthRepository.guard(() async {
       try {
         return await call();
       } on PostgrestException catch (e) {
         debugPrint('CraftHive: $what failed: ${e.code} ${e.message}');
-        if (e.code == 'P0001') throw AppFailure(e.message);
+        if (e.code == 'P0001' || RegExp(r'^PT\d{3}$').hasMatch(e.code ?? '')) throw AppFailure(e.message);
         if (e.code == '23505') throw AppFailure(duplicateMessage(e.message));
         if (e.code == 'PGRST202' || e.code == '42883') {
           throw const AppFailure('The order features are not set up on the server yet. Run database/04_orders_and_custom_orders.sql in Supabase.');
@@ -73,28 +75,31 @@ String duplicateMessage(String dbMessage) {
   return 'This was already saved.';
 }
 
+/// Orders through the CraftHive REST API (/api/v1/orders). Photos still go
+/// straight to Supabase Storage; the API receives their paths.
 class SupabaseOrderRepository implements OrderRepository {
-  SupabaseOrderRepository(this._db);
+  SupabaseOrderRepository(this._db) : _api = ApiClient(_db);
   final SupabaseClient _db;
+  final ApiClient _api;
 
   String get _me => _db.auth.currentUser?.id ?? '';
 
+  /// GET /orders. Unpaid reservations are released every 15 minutes by the
+  /// release-expired-reservations job (database/08), not by reading.
   @override
-  Future<List<Order>> loadOrders() => runDb('load orders', () async {
-        try {
-          // Frees stock held by orders that were never paid (24-hour reservation).
-          await _db.rpc<dynamic>('release_expired_reservations');
-        } on PostgrestException catch (e) {
-          debugPrint('CraftHive: release reservations skipped: ${e.message}');
-        }
-        final rows = await _db.rpc<dynamic>('my_orders');
-        return [for (final r in (rows as List? ?? const [])) orderFromJson(Map<String, dynamic>.from(r as Map))];
-      });
+  Future<List<Order>> loadOrders() async {
+    final res = await _api.get('/orders');
+    return [for (final j in res.list) orderFromApi(j)];
+  }
 
+  /// POST /orders → 201 Created with the new order.
   @override
-  Future<String> placeOrder({required String productId, required int quantity}) => runDb('place order',
-      () async => (await _db.rpc<dynamic>('place_order', params: {'p_product_id': productId, 'p_quantity': quantity})) as String);
+  Future<String> placeOrder({required String productId, required int quantity}) async {
+    final res = await _api.post('/orders', body: {'productId': productId, 'quantity': quantity});
+    return res.map['orderNumber'] as String;
+  }
 
+  /// Uploads the receipt, then POST /orders/{orderId}/payments.
   @override
   Future<void> submitPayment({required Order order, required String reference, required PickedImage proof}) async {
     final type = photoType(proof.fileName);
@@ -103,17 +108,14 @@ class SupabaseOrderRepository implements OrderRepository {
       await _db.storage.from(privateBucket).uploadBinary(path, proof.bytes, fileOptions: FileOptions(contentType: type.mime));
     });
     try {
-      await runDb('save payment', () async {
-        await _db.rpc<dynamic>('submit_payment', params: {
-          'p_order_id': order.id,
-          'p_reference': reference,
-          'p_proof_path': path,
-          'p_proof_hash': proof.hash,
-          'p_amount': order.total,
-        });
+      await _api.post('/orders/${order.id}/payments', body: {
+        'referenceNumber': reference,
+        'amountPaid': order.total,
+        'proofImagePath': path,
+        'proofImageHash': proof.hash,
       });
     } catch (_) {
-      // The payment was refused (for example a reused reference), so remove the unused file.
+      // The payment was refused (for example 409 for a reused reference), so remove the unused file.
       try {
         await _db.storage.from(privateBucket).remove([path]);
       } catch (e) {
@@ -123,25 +125,36 @@ class SupabaseOrderRepository implements OrderRepository {
     }
   }
 
+  /// Finds the proof waiting to be checked, then PATCH /orders/{orderId}/payments/{paymentId}.
   @override
-  Future<void> reviewPayment({required Order order, required bool accept, String? reason}) => runDb('check payment', () async {
-        await _db.rpc<dynamic>('review_payment', params: {'p_order_id': order.id, 'p_accept': accept, 'p_reason': reason});
-      });
+  Future<void> reviewPayment({required Order order, required bool accept, String? reason}) async {
+    final payments = (await _api.get('/orders/${order.id}/payments')).list;
+    final waiting = payments.where((p) => p['status'] == 'submitted').firstOrNull;
+    if (waiting == null) throw const AppFailure('There is no payment proof to check.');
+    await _api.patch('/orders/${order.id}/payments/${waiting['paymentId']}', body: {
+      'status': accept ? 'verified' : 'rejected',
+      if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+    });
+  }
 
+  /// PATCH /orders/{orderId} with the new status.
   @override
-  Future<void> setStatus({required Order order, required String status, String? note}) => runDb('update order', () async {
-        await _db.rpc<dynamic>('set_order_status', params: {'p_order_id': order.id, 'p_status': status, 'p_note': note});
-      });
+  Future<void> setStatus({required Order order, required String status, String? note}) async {
+    await _api.patch('/orders/${order.id}', body: {
+      'status': status,
+      if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+    });
+  }
 
+  /// POST /orders/{orderId}/reviews
   @override
-  Future<void> postReview({required Order order, required int rating, String? comment}) => runDb('post review', () async {
-        await _db.from('review').insert({
-          'order_id': order.id,
-          'product_id': order.productId,
-          'rating': rating,
-          'comment': (comment ?? '').trim().isEmpty ? null : comment!.trim(),
-        });
-      });
+  Future<void> postReview({required Order order, required int rating, String? comment}) async {
+    await _api.post('/orders/${order.id}/reviews', body: {
+      if (order.productId.isNotEmpty) 'productId': order.productId,
+      'rating': rating,
+      if (comment != null && comment.trim().isNotEmpty) 'comment': comment.trim(),
+    });
+  }
 
   @override
   Future<String> privateImageUrl(String path) =>
@@ -200,6 +213,44 @@ Order orderFromJson(Map<String, dynamic> j) {
         OrderEvent(
           orderStatusFromDb((h as Map)['to_status'] as String),
           Fmt.stamp(_date(h['changed_at']) ?? placed),
+          h['note'] as String?,
+        ),
+    ],
+  );
+}
+
+
+/// JSON from the REST API (GET /orders, camelCase) → model.
+Order orderFromApi(Map<String, dynamic> j) {
+  final payment = j['payment'] == null ? null : Map<String, dynamic>.from(j['payment'] as Map);
+  final placed = _date(j['orderDate']) ?? DateTime.now();
+  final status = orderStatusFromDb(j['status'] as String);
+  return Order(
+    id: j['orderId'] as String,
+    number: j['orderNumber'] as String,
+    side: j['side'] == 'selling' ? ChatSide.selling : ChatSide.buying,
+    productId: (j['productId'] as String?) ?? '',
+    itemLabel: (j['productTitle'] as String?) ?? 'Item',
+    quantity: (j['quantity'] as num?)?.toInt() ?? 1,
+    total: (j['totalAmount'] as num).toDouble(),
+    status: status,
+    counterpart: (j['counterpart'] as String?) ?? '',
+    placedOn: Fmt.date(placed),
+    isCustom: j['isCustom'] == true,
+    requestCode: j['requestNumber'] as String?,
+    fulfillment: 'Arrange in chat',
+    paymentMethod: 'GCash or bank transfer',
+    paymentRef: payment?['referenceNumber'] as String?,
+    paymentStatus: paymentStatusFromDb(payment?['status'] as String?),
+    proofPath: payment?['proofImagePath'] as String?,
+    dueDate: _date(j['dueDate']),
+    reservedUntil: status == OrderStatus.pending ? _date(j['reservationExpiresAt']) : null,
+    reviewed: j['reviewed'] == true,
+    history: [
+      for (final h in (j['history'] as List? ?? const []))
+        OrderEvent(
+          orderStatusFromDb((h as Map)['toStatus'] as String),
+          Fmt.stamp(_date(h['changedAt']) ?? placed),
           h['note'] as String?,
         ),
     ],
